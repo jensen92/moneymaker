@@ -1,0 +1,5 @@
+data/
+trades_*.csv
+equity_*.csv
+sweep_*.csv
+__pycache__/
