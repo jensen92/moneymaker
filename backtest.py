@@ -29,17 +29,20 @@ ALLOC = 0.5          # 每策略分配比例 (各 100 萬)
 RISK_PCT = 0.01      # 單筆風險
 PICKS_PER_DAY = 2    # 每子帳戶每日最多新倉
 # 各策略回撤保護閾值 (B 波動大,靠停損與部位控制,不設 pause 上限)
-DD_PAUSE = {"A": 0.20, "B": 1.00}   # A 在 20% 才暫停; B 靠停損控制不設 pause
-DD_RESUME = {"A": 0.10, "B": 1.00}
+DD_PAUSE = {"A": 0.20, "B": 1.00, "C": 1.00}   # A 在 20% 才暫停; B 靠停損控制不設 pause
+DD_RESUME = {"A": 0.10, "B": 1.00, "C": 1.00}
 
 # 各策略最大同時持倉 (持有期越長需要越多槽)
-MAX_POS = {"A": 5, "B": 10}
+MAX_POS = {"A": 5, "B": 10, "C": 8}
 
 
 def load_all():
     data = {}
-    with open(os.path.join(DATA_DIR, "universe.json")) as f:
-        names = {s["code"]: s["name"] for s in json.load(f)}
+    uni = os.path.join(DATA_DIR, "universe.json")
+    names = {}
+    if os.path.exists(uni):
+        with open(uni) as f:
+            names = {s["code"]: s["name"] for s in json.load(f)}
     for fn in os.listdir(DATA_DIR):
         if not fn.endswith(".csv") or fn.startswith("_"):
             continue
@@ -56,12 +59,31 @@ def load_regime():
     return set(df.loc[df["close"] > df["ma60"], "date"])
 
 
+def compute_rs_rank(data):
+    """126 日報酬的全市場百分位排名 (DataFrame: date x code)."""
+    panel = pd.DataFrame({code: df.set_index("date")["ret126"]
+                          for code, df in data.items()})
+    return panel.rank(axis=1, pct=True)
+
+
 def collect_signals(data, strategy_key):
     sig_fn = STRATEGIES[strategy_key]
     signals = defaultdict(list)
+    rs = compute_rs_rank(data) if strategy_key == "C" else None
+    min_i = 210 if strategy_key == "C" else 120  # C 需要 MA200
     for code, df in data.items():
-        for i in range(120, len(df) - 1):
-            s = sig_fn(df, i)
+        for i in range(min_i, len(df) - 1):
+            if strategy_key == "C":
+                d = df["date"].iloc[i]
+                try:
+                    rank = rs.at[d, code]
+                except KeyError:
+                    continue
+                if np.isnan(rank):
+                    continue
+                s = sig_fn(df, i, rs_rank=rank)
+            else:
+                s = sig_fn(df, i)
             if s:
                 signals[df["date"].iloc[i]].append((s["score"], code, i, s))
     return signals
@@ -106,6 +128,8 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                 exit_price = min(p["stop"], row["open"])
             elif p["target"] is not None and row["high"] >= p["target"]:
                 exit_price = row["open"] if row["open"] >= p["target"] else p["target"]
+            elif p.get("minervini") and row["close"] < row["ma50"]:
+                exit_price = row["close"]   # 跌破 50 日線全部出場
             elif di >= p["expire_idx"]:
                 exit_price = row["close"]
 
@@ -115,6 +139,31 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                     atr = row["atr14"] if not np.isnan(row["atr14"]) else p["init_atr"]
                     p["stop"] = max(p["stop"],
                                     p["high_close"] - p["trail_atr"] * atr)
+                if p.get("minervini"):
+                    risk_per_sh = p["entry"] - p["init_stop"]
+                    # +20% 賣出一半鎖利
+                    if not p["half_sold"] and row["high"] >= p["entry"] * 1.20:
+                        px = max(p["entry"] * 1.20, row["open"]) * (1 - SLIP)
+                        half = p["shares"] // 2
+                        if half > 0:
+                            pnl = half * (px * (1 - FEE - TAX)
+                                          - p["entry"] * (1 + FEE))
+                            equity += pnl
+                            trades.append({
+                                "strategy": strategy_key, "code": p["code"],
+                                "entry_date": p["entry_date"], "exit_date": d,
+                                "entry": p["entry"], "exit": px, "pnl": pnl,
+                                "r": pnl / (half * risk_per_sh),
+                            })
+                            p["shares"] -= half
+                            p["risk_amt"] = p["shares"] * risk_per_sh
+                        p["half_sold"] = True
+                    # 獲利達 3R 時停損上移至成本價 (保本)
+                    if row["close"] >= p["entry"] + 3 * risk_per_sh:
+                        p["stop"] = max(p["stop"], p["entry"])
+                    # MA50 上穿成本價後改用 MA50 移動停損
+                    if row["ma50"] >= p["entry"]:
+                        p["stop"] = max(p["stop"], row["ma50"])
                 still_open.append(p)
                 continue
 
@@ -158,7 +207,10 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                 atr = df["atr14"].iloc[ei - 1]
                 if np.isnan(atr) or atr <= 0:
                     continue
-                stop = entry - s["stop_atr"] * atr
+                if "stop_pct" in s:
+                    stop = entry * (1 - s["stop_pct"])
+                else:
+                    stop = entry - s["stop_atr"] * atr
                 if stop <= 0 or entry <= stop:
                     continue
                 risk_per_sh = entry - stop
@@ -166,6 +218,9 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                 shares = int(risk_amt / risk_per_sh / 1000) * 1000
                 if shares <= 0:
                     shares = max(1, int(risk_amt / risk_per_sh))
+                if s.get("minervini"):  # 單一個股不超過子帳戶 25%
+                    cap = int(equity * 0.25 / entry / 1000) * 1000
+                    shares = min(shares, max(cap, 1))
                 notional = shares * entry
                 if exposure + notional > equity * leverage:
                     allowed = equity * leverage - exposure
@@ -180,8 +235,11 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                     "shares": shares,
                     "entry": entry,
                     "stop": stop,
+                    "init_stop": stop,
                     "target": target,
                     "trail_atr": s.get("trail_atr"),
+                    "minervini": s.get("minervini", False),
+                    "half_sold": False,
                     "high_close": entry,
                     "init_atr": atr,
                     "entry_idx": ei,
@@ -199,13 +257,13 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
     return trades, pd.DataFrame(curve)
 
 
-def run(data, names, leverage=2.0, verbose=False):
+def run(data, names, leverage=2.0, strategies=("A", "B")):
     risk_on = load_regime()
-    init_eq = INIT_CAPITAL * ALLOC
+    init_eq = INIT_CAPITAL / len(strategies)
 
     all_trades = []
     curves = {}
-    for k in ("A", "B"):
+    for k in strategies:
         print(f"  回測策略 {k}...")
         sigs = collect_signals(data, k)
         sigs = {d: lst for d, lst in sigs.items() if d in risk_on}
@@ -214,11 +272,12 @@ def run(data, names, leverage=2.0, verbose=False):
         all_trades.extend(trades)
         curves[k] = curve
 
-    # 合併權益曲線
-    combined = curves["A"][["date", "equity"]].copy()
-    combined = combined.merge(
-        curves["B"][["date", "equity"]], on="date", suffixes=("_A", "_B"))
-    combined["equity"] = combined["equity_A"] + combined["equity_B"]
+    # 合併權益曲線 (任意數量子帳戶相加)
+    combined = None
+    for k in strategies:
+        c = curves[k][["date", "equity"]].rename(columns={"equity": f"eq_{k}"})
+        combined = c if combined is None else combined.merge(c, on="date")
+    combined["equity"] = sum(combined[f"eq_{k}"] for k in strategies)
     combined["drawdown"] = ((combined["equity"].cummax() - combined["equity"])
                             / combined["equity"].cummax())
 
@@ -234,7 +293,7 @@ def report(trades, combined, curves, leverage):
     cagr = (eq.iloc[-1] / INIT_CAPITAL) ** (1 / max(years, 0.01)) - 1
 
     print(f"\n{'='*55}")
-    print(f"組合回測  (A 50% + B 50%,  槓桿 {leverage}x)")
+    print(f"組合回測  ({' + '.join(curves)} 均分資金,  槓桿 {leverage}x)")
     print(f"{'='*55}")
     print(f"總報酬: {ret:+.1%}   年化: {cagr:+.1%}   最大回撤: {dd_max:.1%}")
     print(f"期末權益: {eq.iloc[-1]:,.0f}   (初始 {INIT_CAPITAL:,.0f})")
@@ -243,7 +302,7 @@ def report(trades, combined, curves, leverage):
           f"{'報酬':>7} {'年化':>7} {'最大回撤':>8} {'暫停日':>6}")
     print("-" * 65)
     for k, curve in curves.items():
-        sub_init = INIT_CAPITAL * ALLOC
+        sub_init = INIT_CAPITAL / len(curves)
         sub_eq = curve["equity"]
         sub_ret = sub_eq.iloc[-1] / sub_init - 1
         sub_dd = curve["drawdown"].max()
@@ -266,21 +325,26 @@ def report(trades, combined, curves, leverage):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--leverage", type=float, default=2.0)
+    ap.add_argument("--strategies", default="A,B",
+                    help="逗號分隔, 例如 A,B,C")
+    ap.add_argument("--data-dir", default=None,
+                    help="覆寫資料目錄 (例如 data_adj)")
     args = ap.parse_args()
 
+    if args.data_dir:
+        global DATA_DIR
+        DATA_DIR = os.path.join(os.path.dirname(__file__), args.data_dir)
+
+    strategies = tuple(args.strategies.split(","))
     print("載入資料...")
     data, names = load_all()
     print(f"{len(data)} 檔股票\n")
 
-    trades, combined, curves = run(data, names, leverage=args.leverage)
+    trades, combined, curves = run(data, names, leverage=args.leverage,
+                                   strategies=strategies)
     tdf, _ = report(trades, combined, curves, args.leverage)
     tdf.to_csv("trades_combined.csv", index=False)
     combined.to_csv("equity_combined.csv", index=False)
-
-    # 1 倍槓桿對比
-    print("\n--- 1x 槓桿對比 ---")
-    t1, c1, cv1 = run(data, names, leverage=1.0)
-    report(t1, c1, cv1, 1.0)
 
 
 if __name__ == "__main__":

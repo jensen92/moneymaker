@@ -20,15 +20,24 @@ import pandas as pd
 def add_indicators(df):
     df = df.copy()
     df["ma20"] = df["close"].rolling(20).mean()
+    df["ma50"] = df["close"].rolling(50).mean()
     df["ma60"] = df["close"].rolling(60).mean()
+    df["ma150"] = df["close"].rolling(150).mean()
+    df["ma200"] = df["close"].rolling(200).mean()
     df["vol_ma20"] = df["volume"].rolling(20).mean()
+    df["vol_ma50"] = df["volume"].rolling(50).mean()
     df["ret20"] = df["close"].pct_change(20)
     df["ret60"] = df["close"].pct_change(60)
+    df["ret126"] = df["close"].pct_change(126)
     tr = np.maximum(df["high"] - df["low"],
                     np.maximum((df["high"] - df["close"].shift()).abs(),
                                (df["low"] - df["close"].shift()).abs()))
     df["atr14"] = tr.rolling(14).mean()
+    df["atr5"] = tr.rolling(5).mean()
     df["high60"] = df["high"].rolling(60).max()
+    df["high252"] = df["high"].rolling(252).max()
+    df["low252"] = df["low"].rolling(252).min()
+    df["high20"] = df["high"].rolling(20).max()
     return df
 
 
@@ -74,4 +83,56 @@ def signal_b(df, i):
     return None
 
 
-STRATEGIES = {"A": signal_a, "B": signal_b}
+def signal_c(df, i, rs_rank=None):
+    """Minervini 第二階段趨勢模板 + 波動收縮突破 (策略 C).
+
+    模板 (8 條件, P/E 與 RS 線以可得資料近似):
+      1/8. close > MA150, MA200, MA50
+      2.   MA150 > MA200
+      3.   MA200 上揚 >= 1 個月 (21 交易日)
+      4.   MA50 > MA150 > MA200
+      5.   close >= 52 週低點 * 1.25
+      6.   close >= 52 週高點 * 0.75
+      7.   RS rank >= 70 (126 日報酬全市場百分位, 由回測引擎預先計算)
+    觸發: 波動收縮 (ATR5 < 0.75*ATR14) + 樞軸日量縮 (< MA50量)
+          次日突破 20 日高點 + 放量 (>1.5x MA50量) -- 以收盤突破近似
+    出場 (引擎特殊處理):
+      - 初始停損 8% (上限 10%)
+      - 獲利達 3R 停損上移至成本價
+      - MA50 上穿成本價後改用 MA50 移動停損
+      - +20% 賣出一半
+      - 收盤跌破 MA50 全部出場; 最長持有 90 日
+    """
+    row = df.iloc[i]
+    if np.isnan(row["ma200"]) or np.isnan(row["low252"]) or row["close"] < 10:
+        return None
+    if row["volume"] * row["close"] < 50_000_000:
+        return None
+    template = (
+        row["close"] > row["ma150"] and row["close"] > row["ma200"]
+        and row["ma150"] > row["ma200"]
+        and row["ma200"] > df["ma200"].iloc[i - 21]          # 條件 3
+        and row["ma50"] > row["ma150"]                        # 條件 4
+        and row["close"] > row["ma50"]                        # 條件 8
+        and row["close"] >= row["low252"] * 1.25              # 條件 5
+        and row["close"] >= row["high252"] * 0.75             # 條件 6
+    )
+    if not template:
+        return None
+    if rs_rank is not None and rs_rank < 0.70:                # 條件 7
+        return None
+    # 波動收縮與量縮看突破前一日 (突破日本身必然放量)
+    prev = df.iloc[i - 1]
+    contraction = prev["atr5"] < 0.80 * prev["atr14"]
+    vol_dryup = prev["volume"] < prev["vol_ma50"]
+    prior_high20 = df["high"].iloc[i - 20:i].max()
+    breakout = (row["close"] > prior_high20
+                and row["volume"] > 1.5 * row["vol_ma50"])
+    if contraction and vol_dryup and breakout:
+        stop_pct = 0.08
+        return {"score": rs_rank if rs_rank is not None else row["ret126"],
+                "minervini": True, "stop_pct": stop_pct, "max_hold": 90}
+    return None
+
+
+STRATEGIES = {"A": signal_a, "B": signal_b, "C": signal_c}
