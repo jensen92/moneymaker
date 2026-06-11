@@ -47,10 +47,10 @@ def signal_a(df, i):
     touched = row["low"] <= row["ma20"]          # 確實觸及 MA20 (不含緩衝)
     reclaimed = row["close"] > row["ma20"] and row["close"] > prev["close"]
     if uptrend and momentum and touched and reclaimed:
-        # 參數掃描選定: stop=1.5 ATR / touch=MA20 exact / mom 15-60%
-        # 在所有組合中 DD 最低 (27%) 同時 pf=1.16, ret=+30%
-        return {"score": row["ret60"], "stop_atr": 1.5,
-                "target_r": 1.8, "max_hold": 20}
+        # 新引擎掃描 36 組選定: 勝率 45%, pf=1.28, dd=12.4%;
+        # target=1.8R 整欄在所有停損值下皆獲利 (穩健區域非單點)
+        return {"score": row["ret60"], "stop_atr": 2.0,
+                "target_r": 1.8, "max_hold": 30}
     return None
 
 
