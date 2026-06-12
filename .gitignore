@@ -4,3 +4,4 @@ equity_*.csv
 sweep_*.csv
 __pycache__/
 data_adj/
+picks_c_monthly.csv
