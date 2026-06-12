@@ -79,7 +79,7 @@ def task(stock):
         for attempt in range(3):
             try:
                 rows = fetch_adjusted(code, suffix)
-                if rows and len(rows) >= 250:
+                if rows and len(rows) >= 60:  # 新上市股資料較少，降低門檻
                     with open(os.path.join(DATA_ADJ, f"{code}.csv"),
                               "w", newline="") as f:
                         w = csv.writer(f)
