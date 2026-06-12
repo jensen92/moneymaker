@@ -135,4 +135,83 @@ def signal_c(df, i, rs_rank=None):
     return None
 
 
-STRATEGIES = {"A": signal_a, "B": signal_b, "C": signal_c}
+def _vcp_pattern(df, i, base_len=45, n_seg=3):
+    """偵測波動收縮型態 (VCP): 基底內逐段收縮的回檔.
+
+    將突破日前 base_len 日切成 n_seg 段, 各段深度 = (段高-段低)/段高.
+    要求: 深度逐段遞減, 末段 <= 10%, 首段 <= 35% (深度過大代表基底失敗),
+          末段均量 < 首段均量 (供給枯竭).
+    回傳 (pivot, last_low, last_depth) 或 None.
+    """
+    if i < base_len:
+        return None
+    seg = base_len // n_seg
+    depths, vols = [], []
+    last_high = last_low = None
+    for k in range(n_seg):
+        s = i - base_len + k * seg
+        e = s + seg
+        hi = df["high"].iloc[s:e].max()
+        lo = df["low"].iloc[s:e].min()
+        if hi <= 0:
+            return None
+        depths.append((hi - lo) / hi)
+        vols.append(df["volume"].iloc[s:e].mean())
+        if k == n_seg - 1:
+            last_high, last_low = hi, lo
+    if not all(depths[k] > depths[k + 1] for k in range(n_seg - 1)):
+        return None
+    if depths[-1] > 0.10 or depths[0] > 0.35:
+        return None
+    if vols[-1] >= vols[0]:          # 量未隨基底收縮
+        return None
+    return last_high, last_low, depths[-1]
+
+
+def signal_d(df, i, rs_rank=None):
+    """Mark Minervini SEPA 完整版 (策略 D).
+
+    與策略 C 差異:
+      - RS rank 門檻 85 (Minervini 原則: RS >= 85-90)
+      - 嚴格 VCP: 基底 45 日切 3 段, 回檔深度逐段收縮 (T1>T2>T3),
+        末段 <= 10%, 量逐段枯竭
+      - 樞軸突破: 收盤突破末段高點 (pivot) + 放量 > 1.5x 50日均量
+      - 突破日漲幅 <= 10% (避免追過度延伸)
+      - 停損: 末段低點與 8% 取較近者 (下限 4%), 風報比更佳
+    出場沿用 Minervini 引擎邏輯 (跌破 MA50 全出 / +20% 賣半 /
+    3R 保本 / MA50 移動停損), 最長持有 90 日.
+    """
+    row = df.iloc[i]
+    if np.isnan(row["ma200"]) or np.isnan(row["low252"]) or row["close"] < 10:
+        return None
+    if row["volume"] * row["close"] < 50_000_000:
+        return None
+    template = (
+        row["close"] > row["ma150"] and row["close"] > row["ma200"]
+        and row["ma150"] > row["ma200"]
+        and row["ma200"] > df["ma200"].iloc[i - 21]
+        and row["ma50"] > row["ma150"]
+        and row["close"] > row["ma50"]
+        and row["close"] >= row["low252"] * 1.25
+        and row["close"] >= row["high252"] * 0.75
+    )
+    if not template:
+        return None
+    if rs_rank is None or rs_rank < 0.85:
+        return None
+    vcp = _vcp_pattern(df, i)
+    if vcp is None:
+        return None
+    pivot, last_low, last_depth = vcp
+    breakout = (row["close"] > pivot
+                and row["volume"] > 1.5 * row["vol_ma50"]
+                and row["close"] / df["close"].iloc[i - 1] - 1 <= 0.10)
+    if not breakout:
+        return None
+    # 停損放在末段低點下方一點, 介於 4%~8%
+    stop_pct = min(0.08, max(0.04, 1 - last_low / row["close"] + 0.01))
+    return {"score": rs_rank, "minervini": True,
+            "stop_pct": round(stop_pct, 4), "max_hold": 90}
+
+
+STRATEGIES = {"A": signal_a, "B": signal_b, "C": signal_c, "D": signal_d}

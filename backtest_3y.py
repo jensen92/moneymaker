@@ -1,4 +1,4 @@
-"""Strategy C 近三年回測 (2023-06-01 ~ 2026-06-12)."""
+"""近三年回測 (2023-06-01 ~ 2026-06-12). 用法: python3 backtest_3y.py [策略代號]"""
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -12,7 +12,7 @@ from strategies import add_indicators
 TRADE_START = pd.Timestamp("2023-06-01")
 WARMUP_ROWS = 215   # signal_c 需要 210 列歷史
 
-def main():
+def main(strategy="C"):
     print("載入資料 (with warmup)...")
     data, names = load_all()
 
@@ -37,7 +37,7 @@ def main():
     print("計算 RS Rank...")
     from backtest import compute_rs_rank
     # RS rank 用 trimmed data
-    sigs_all = collect_signals(trimmed, "C")
+    sigs_all = collect_signals(trimmed, strategy)
 
     # 只取 TRADE_START 之後的訊號
     sigs = {d: lst for d, lst in sigs_all.items()
@@ -46,7 +46,7 @@ def main():
     entry_map = build_entry_map(sigs, trimmed)
     print(f"訊號日數: {len(sigs)}, 進場候選筆數: {sum(len(v) for v in entry_map.values())}")
 
-    trades, curve = run_sub(trimmed, entry_map, "C", leverage=1.0, init_eq=init_eq)
+    trades, curve = run_sub(trimmed, entry_map, strategy, leverage=1.0, init_eq=init_eq)
 
     # 只顯示 TRADE_START 之後的曲線
     curve = curve[curve["date"] >= TRADE_START].reset_index(drop=True)
@@ -66,7 +66,7 @@ def main():
     tdf_period = tdf[tdf["exit_date"] >= TRADE_START] if not tdf.empty else tdf
 
     print(f"\n{'='*55}")
-    print(f"策略 C 近三年回測  ({start_date:%Y-%m-%d} ~ {end_date:%Y-%m-%d})")
+    print(f"策略 {strategy} 近三年回測  ({start_date:%Y-%m-%d} ~ {end_date:%Y-%m-%d})")
     print(f"{'='*55}")
     print(f"初始資金: {init_eq:,.0f}")
     print(f"期末權益: {end_eq:,.0f}")
@@ -76,9 +76,9 @@ def main():
     if not tdf_period.empty:
         wins = (tdf_period["pnl"] > 0).sum()
         print(f"交易筆數: {len(tdf_period)}  勝率: {wins/len(tdf_period):.1%}")
-    curve.to_csv("equity_c_3y.csv", index=False)
-    print("\n權益曲線已存至 equity_c_3y.csv")
+    curve.to_csv(f"equity_{strategy.lower()}_3y.csv", index=False)
+    print("\n權益曲線已存至 equity 檔")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else "C")

@@ -29,11 +29,11 @@ ALLOC = 0.5          # 每策略分配比例 (各 100 萬)
 RISK_PCT = 0.01      # 單筆風險
 PICKS_PER_DAY = 2    # 每子帳戶每日最多新倉
 # 各策略回撤保護閾值 (B 波動大,靠停損與部位控制,不設 pause 上限)
-DD_PAUSE = {"A": 0.20, "B": 1.00, "C": 1.00}   # A 在 20% 才暫停; B 靠停損控制不設 pause
-DD_RESUME = {"A": 0.10, "B": 1.00, "C": 1.00}
+DD_PAUSE = {"A": 0.20, "B": 1.00, "C": 1.00, "D": 1.00}   # A 在 20% 才暫停; B 靠停損控制不設 pause
+DD_RESUME = {"A": 0.10, "B": 1.00, "C": 1.00, "D": 1.00}
 
 # 各策略最大同時持倉 (持有期越長需要越多槽)
-MAX_POS = {"A": 5, "B": 10, "C": 8}
+MAX_POS = {"A": 5, "B": 10, "C": 8, "D": 8}
 
 
 def load_all():
@@ -69,11 +69,12 @@ def compute_rs_rank(data):
 def collect_signals(data, strategy_key):
     sig_fn = STRATEGIES[strategy_key]
     signals = defaultdict(list)
-    rs = compute_rs_rank(data) if strategy_key == "C" else None
-    min_i = 210 if strategy_key == "C" else 120  # C 需要 MA200
+    needs_rs = strategy_key in ("C", "D")
+    rs = compute_rs_rank(data) if needs_rs else None
+    min_i = 210 if needs_rs else 120  # C/D 需要 MA200
     for code, df in data.items():
         for i in range(min_i, len(df) - 1):
-            if strategy_key == "C":
+            if needs_rs:
                 d = df["date"].iloc[i]
                 try:
                     rank = rs.at[d, code]
