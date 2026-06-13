@@ -54,7 +54,7 @@ PAUSE_COOLDOWN = 60
 REGIME_RISK_MULT = {2: 1.0, 1: 0.6, 0: 0.0}   # 強勢/盤整/防禦
 # 波動目標化: TAIEX 20日年化波動率的「基準值」; 超過時縮小 RISK_PCT
 VOL_TARGET = 0.15   # 15% 年化波動 = 1× ; 30% → 0.5×
-VOL_CAP    = 2.0    # vol scalar 上限 (極低波動時最多放大一倍)
+VOL_CAP    = 1.0    # 只縮不放: 低波動時維持原 RISK_PCT, 高波動時縮小
 
 # 漲跌停判定門檻: 日振幅 / 開盤價 < 此值視為限制板
 LIMIT_RANGE_THRESH = 0.005
