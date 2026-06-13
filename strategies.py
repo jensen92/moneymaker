@@ -37,28 +37,30 @@ def add_indicators(df):
 # 策略 A 輔助函式
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _detect_vcp(df, i, cfg):
-    """VCP 波動收縮型態偵測 (Volatility Contraction Pattern).
+def _vcp_raw(df, i, window=4, lookback=120):
+    """抽取 VCP 原始特徵 (與門檻無關), 供掃描重用. 結構無效則回傳 None.
 
-    依 cfg 字典中的 vcp_* 參數執行偵測，回傳 (is_vcp: bool, n_T: int, pivot: float|None).
+    回傳 (swings, vol_ratio, pivot):
+      swings    — 由左到右的回撤幅度 list (peak→trough, 有效範圍 3%~65%)
+      vol_ratio — 近 10 根均量 / 整段均量 (量縮程度, 越小越乾)
+      pivot     — 近 20 根 (不含當根) 最高價, 作為突破樞紐
+    收縮次數/末段緊縮/深度/量縮等門檻一律由 _a_signal 套用, 此處只算原始量.
     """
-    lookback = min(cfg["vcp_lookback"], i - 2)
-    s = i - lookback
+    lb = min(lookback, i - 2)
+    s = i - lb
     hi  = df["high"].values[s:i + 1]
     lo  = df["low"].values[s:i + 1]
     vol = df["volume"].values[s:i + 1]
     n   = len(hi)
     if n < 20:
-        return False, 0, None
+        return None
 
-    w = cfg["vcp_window"]
-    # 局部極值 (window = w bars)
+    w = window
     peaks   = [j for j in range(w, n - w) if hi[j] == hi[j - w:j + w + 1].max()]
     troughs = [j for j in range(w, n - w) if lo[j] == lo[j - w:j + w + 1].min()]
     if len(peaks) < 2 or len(troughs) < 2:
-        return False, 0, None
+        return None
 
-    # 按時間排列，依序找 peak→trough 對，記回撤幅度
     events = [(j, "P", hi[j]) for j in peaks] + [(j, "T", lo[j]) for j in troughs]
     events.sort()
     swings, last_pk = [], None
@@ -67,61 +69,41 @@ def _detect_vcp(df, i, cfg):
             last_pk = (j, v)
         elif t == "T" and last_pk is not None:
             pct = (last_pk[1] - v) / last_pk[1]
-            if 0.03 <= pct <= 0.65:      # 有效回撤範圍
+            if 0.03 <= pct <= 0.65:
                 swings.append(pct)
-            last_pk = None               # 下一輪需新高點
+            last_pk = None
 
-    T_min = cfg["vcp_T_min"]
-    T_max = cfg["vcp_T_max"]
-    if len(swings) < T_min:
-        return False, 0, None
-
-    sw = swings[-T_max:]                 # 取最後 T_max 次收縮
-
-    # 條件一: 收縮次數 >= T_min
-    if len(sw) < T_min:
-        return False, 0, None
-    # 條件二: 末段夠緊 (最後一次收縮 <= vcp_last_max)
-    if sw[-1] > cfg["vcp_last_max"]:
-        return False, 0, None
-    # 條件三: 整體最深回撤不超過上限
-    if max(sw) > cfg["vcp_depth_max"]:
-        return False, 0, None
-    # 條件四: 整體遞縮 (末次 < 首次 × 0.80)
-    if sw[-1] >= sw[0] * 0.80:
-        return False, 0, None
-    # 條件五: 末段量縮 (近 10 根均量 / 整段均量 <= vcp_dryup)
+    if not swings:
+        return None
     mean_all = np.nanmean(vol)
     mean_last10 = np.nanmean(vol[-10:])
-    if mean_all <= 0 or mean_last10 / mean_all > cfg["vcp_dryup"]:
-        return False, 0, None
-
-    # 通過: pivot = 近 20 根最高價 (不含當根, 避免 close <= high[i] 永遠無法突破)
+    vol_ratio = (mean_last10 / mean_all) if mean_all and mean_all > 0 else 9.9
     pivot = float(np.nanmax(hi[-21:-1]) if len(hi) >= 21 else np.nanmax(hi[:-1]))
-    return True, len(sw), pivot
+    return swings, vol_ratio, pivot
 
 
 A_CONFIG = {
     # L2 趨勢樣板
     "rs_min":              0.70,   # RS 百分位 >= 70 (嚴格版 0.80~0.90)
-    "rs_uptrend_days":     30,     # RS 線上升趨勢天數 (6週≈30交易日)
-    "ma200_uptrend_days":  21,     # MA200 上彎觀察天數
-    "above_52w_low":       0.25,   # 高於 52 週低點 >= 25%
-    "within_52w_high":     0.25,   # 在 52 週高點 25% 以內
+    "use_rs_uptrend":      True,   # 是否套用條件 7b (RS 線上升趨勢)
+    # L1 負面排除
+    "use_l1":              True,   # 是否套用 L1 負面排除 (下跳空/高量長黑)
     # L5 VCP
-    "vcp_lookback":        120,    # VCP 偵測回看天數
     "vcp_T_min":           2,      # 最少收縮次數 T
     "vcp_T_max":           6,      # 最多收縮次數 T
     "vcp_last_max":        0.10,   # 末段收縮上限 10%（理想 < 5%）
     "vcp_depth_max":       0.35,   # 整體最深回撤上限 35%
-    "vcp_dryup":           0.85,   # 末段均量 / 整段均量 上限 (台股流動性較低, 0.85 合理)
-    "vcp_window":          4,      # swing point 判斷窗口
+    "vcp_contraction_ratio": 0.80, # 整體遞縮: 末次 < 首次 × 此值
+    "vcp_dryup":           0.85,   # 末段均量 / 整段均量 上限 (台股流動性較低)
     # L6 進場
     "breakout_vol_x":      1.5,    # 突破放量倍數
+    "use_mvp":             True,   # 是否啟用 MVP 追勢進場 (突破 OR MVP)
     # 停損 / 持有
     "stop_pct":            0.07,   # 初始停損 7%（平均目標 5–6%，最大 10%）
+    "three_week_gain":     0.20,   # 三週法則: N 日內漲幅 >= 此值即讓利潤奔跑
     "max_hold":            90,
     # 出場：衝頂 (強勢賣出)
+    "use_climax":          True,   # 是否啟用衝頂出場 (強勢賣在上漲中)
     "climax_sprint_pct":   0.25,   # 近 15 日漲幅 >= 25% (衝頂觸發)
     "climax_min_gain":     0.30,   # 持倉總獲利 >= 30% 才啟動衝頂賣出
     "extended_updays":     7,      # 近 10 日上漲天數 >= 7 (延長訊號)
@@ -129,127 +111,146 @@ A_CONFIG = {
 }
 
 
-def signal_a(df, i, rs_rank=None):
-    """Minervini SEPA 完整版 (策略 A) — 六層漏斗全部實作.
+def _a_features(df, i, rs_rank):
+    """抽取策略 A 所需的原始特徵 (與可調門檻無關), 模板不過回傳 None.
 
-    L0  可交易性門檻
-    L1  負面排除 (先行刷掉)
-    L2  趨勢樣板 (8 條件)
-    L3  相對強度 (已於 L2 條件 7a/7b 處理)
-    L4  基本面 (跳過，無財報資料)
-    L5  VCP 型態偵測
-    L6  進場訊號 (突破 OR MVP)
+    供 signal_a 與 optimize_a 共用: L0 + L2 模板 (條件 1-6,8 固定標準值) 與
+    VCP swing 掃描只算一次; 7a/7b/L1/VCP 門檻/進場/出場 留給 _a_signal 套參數.
     """
-    cfg  = A_CONFIG
-    row  = df.iloc[i]
-
+    row = df.iloc[i]
     # ═══ L0: 可交易性 ════════════════════════════════════════════════════
-    # 股價 < 10 元 → 流動性不足、散戶雜訊多
     if row["close"] < 10:
         return None
-    # 日成交金額 < 5000 萬 → 機構難以建倉
     if row["volume"] * row["close"] < 50_000_000:
         return None
-    # MA200 或 52 週低點尚未形成 → 資料不足
     if np.isnan(row["ma200"]) or np.isnan(row["low252"]):
         return None
-    # 上市天數不足 200 日 → 樣板條件無法計算
     if i < 200:
         return None
 
-    # ═══ L1 / L5 負面排除 (先行刷掉) ════════════════════════════════════
-    # 跌破 MA200 → 脫離第二階段、可能進入第四階段衰退
-    if row["close"] < row["ma200"]:
+    # ═══ L2: 趨勢樣板 (條件 1-6, 8 固定標準值; 7a/7b 留給 _a_signal) ══════
+    if not (row["close"] > row["ma150"] and row["close"] > row["ma200"]):  # 1
         return None
-    # 從 52 週高點回撤 > 50% → 基本面惡化、上方套牢壓力大
-    if row["close"] < row["high252"] * 0.50:
+    if row["ma150"] <= row["ma200"]:                                       # 2
         return None
-    # 近 40 根內向下跳空 (>3%) 次數 >= 3 → 台股小跳空常見, 提高門檻才算連續出貨
+    if row["ma200"] <= df["ma200"].iloc[i - 21]:                           # 3
+        return None
+    if row["ma50"] <= row["ma150"]:                                        # 4
+        return None
+    if row["close"] < row["low252"] * 1.25:                                # 5
+        return None
+    if row["close"] < row["high252"] * 0.75:                               # 6
+        return None
+    if row["close"] <= row["ma50"]:                                        # 8
+        return None
+
+    # ═══ L5: VCP 原始特徵 (swing 掃描, 重運算只做一次) ═══════════════════
+    vcp = _vcp_raw(df, i)
+    if vcp is None:
+        return None
+    swings, vol_ratio, pivot = vcp
+
+    # ═══ L1: 負面排除原始量 (存 bool, 由 _a_signal 決定是否套用) ═════════
     gap_downs = sum(
         1 for k in range(max(1, i - 39), i + 1)
         if df["open"].iloc[k] < df["close"].iloc[k - 1] * 0.97
     )
-    if gap_downs >= 3:
-        return None
-    # 近 60 根內成交量最大的一天是長黑 (收 < 開 * 0.985) → 機構出貨
     sub60 = df.iloc[max(0, i - 59):i + 1]
     mvr = df.iloc[sub60["volume"].idxmax()]
-    if mvr["close"] < mvr["open"] * 0.985:
-        return None
+    big_red = mvr["close"] < mvr["open"] * 0.985
+    l1_pass = gap_downs < 3 and not big_red
 
-    # ═══ L2: 趨勢樣板 (8 條件) ══════════════════════════════════════════
-    # 條件 1: close > MA150 且 close > MA200 (股價在長均線上方)
-    if not (row["close"] > row["ma150"] and row["close"] > row["ma200"]):
-        return None
-    # 條件 2: MA150 > MA200 (中期均線在長期均線上方)
-    if row["ma150"] <= row["ma200"]:
-        return None
-    # 條件 3: MA200 上彎 >= ma200_uptrend_days 日 (長均線仍在上升趨勢)
-    if row["ma200"] <= df["ma200"].iloc[i - cfg["ma200_uptrend_days"]]:
-        return None
-    # 條件 4: MA50 > MA150 (短均線 > 中均線，排列最佳)
-    if row["ma50"] <= row["ma150"]:
-        return None
-    # 條件 5: close >= 52 週低點 * (1 + above_52w_low)，脫離底部至少 25%
-    if row["close"] < row["low252"] * (1 + cfg["above_52w_low"]):
-        return None
-    # 條件 6: close >= 52 週高點 * (1 - within_52w_high)，位於年高附近 25% 以內
-    if row["close"] < row["high252"] * (1 - cfg["within_52w_high"]):
-        return None
-    # 條件 7a: RS 百分位排名 >= rs_min (相對強度門檻)
-    if rs_rank is None or rs_rank < cfg["rs_min"]:
-        return None
-    # 條件 7b: RS 線上升趨勢 >= rs_uptrend_days 日 (ret126 上升 → 相對強度持續改善)
-    if i < cfg["rs_uptrend_days"] or df["ret126"].iloc[i] <= df["ret126"].iloc[i - cfg["rs_uptrend_days"]]:
-        return None
-    # 條件 8: close > MA50 (股價在短均線上方，近期多頭確認)
-    if row["close"] <= row["ma50"]:
-        return None
+    # ═══ L2 條件 7b: RS 線上升趨勢 (ret126 近 30 日上升) ════════════════
+    rs_uptrend = i >= 30 and df["ret126"].iloc[i] > df["ret126"].iloc[i - 30]
 
-    # ═══ L3: 相對強度 (已由條件 7a / 7b 處理，無額外條件) ══════════════
-
-    # ═══ L4: 基本面 (跳過，無財報資料 EPS/Revenue/ROE) ══════════════════
-
-    # ═══ L5: VCP 型態偵測 ════════════════════════════════════════════════
-    vcp_ok, n_T, pivot = _detect_vcp(df, i, A_CONFIG)
-    if not vcp_ok:
-        return None
-
-    # ═══ L6: 進場訊號 (突破 OR MVP，OR 關係) ═════════════════════════════
-    vol_ma50 = row["vol_ma50"]
-    # 突破: 收盤突破 VCP 樞紐點 + 當日量 > breakout_vol_x × MA50量
-    breakout = (row["close"] > pivot
-                and row["volume"] > cfg["breakout_vol_x"] * vol_ma50)
-
-    # MVP (David Ryan 動能法): 近 15 日 up_days >= 12
-    #   + vol_ma20 相較 15 日前增加 25% (量能持續擴張)
-    #   + 近 15 日漲幅 >= 20% (強勢價格動能)
-    mvp = False
+    # ═══ L6: MVP 原始量 (David Ryan 動能法) ════════════════════════════
+    up_days, ret15, vol_ma20_ratio = 0, 0.0, 0.0
     if i >= 15:
         up_days = sum(
             1 for k in range(i - 14, i + 1)
             if df["close"].iloc[k] > df["close"].iloc[k - 1]
         )
-        vol_surge15 = (not np.isnan(df["vol_ma20"].iloc[i - 15])
-                       and row["vol_ma20"] > df["vol_ma20"].iloc[i - 15] * 1.25)
         ret15 = row["close"] / df["close"].iloc[i - 15] - 1.0
-        mvp = up_days >= 12 and vol_surge15 and ret15 >= 0.20
-
-    if not (breakout or mvp):
-        return None
+        v0 = df["vol_ma20"].iloc[i - 15]
+        vol_ma20_ratio = (row["vol_ma20"] / v0) if v0 and v0 > 0 else 0.0
 
     return {
-        "score":              rs_rank,
-        "minervini":          True,
-        "stop_pct":           A_CONFIG["stop_pct"],
-        "three_week_gain":    0.20,
-        "max_hold":           A_CONFIG["max_hold"],
-        "climax_exit":        True,                           # 啟用衝頂出場
-        "climax_sprint_pct":  A_CONFIG["climax_sprint_pct"],
-        "climax_min_gain":    A_CONFIG["climax_min_gain"],
-        "extended_updays":    A_CONFIG["extended_updays"],
-        "extended_min_gain":  A_CONFIG["extended_min_gain"],
+        "rank":           rs_rank,
+        "rs_uptrend":     rs_uptrend,
+        "l1_pass":        l1_pass,
+        "swings":         swings,
+        "vol_ratio":      vol_ratio,
+        "pivot":          pivot,
+        "close":          row["close"],
+        "volume":         row["volume"],
+        "vol_ma50":       row["vol_ma50"],
+        "up_days15":      up_days,
+        "ret15":          ret15,
+        "vol_ma20_ratio": vol_ma20_ratio,
     }
+
+
+def _a_signal(feat, cfg):
+    """以參數組合 cfg 對特徵 feat 判定策略 A 訊號, 回傳訊號字典或 None."""
+    if feat is None:
+        return None
+    # 條件 7a: RS 門檻
+    if feat["rank"] is None or feat["rank"] < cfg["rs_min"]:
+        return None
+    # 條件 7b: RS 線上升趨勢 (可選)
+    if cfg.get("use_rs_uptrend", True) and not feat["rs_uptrend"]:
+        return None
+    # L1 負面排除 (可選)
+    if cfg.get("use_l1", True) and not feat["l1_pass"]:
+        return None
+    # L5 VCP 門檻
+    sw = feat["swings"][-cfg["vcp_T_max"]:]
+    if len(sw) < cfg["vcp_T_min"]:
+        return None
+    if sw[-1] > cfg["vcp_last_max"]:                       # 末段夠緊
+        return None
+    if max(sw) > cfg["vcp_depth_max"]:                     # 整體不過深
+        return None
+    if sw[-1] >= sw[0] * cfg["vcp_contraction_ratio"]:     # 整體遞縮
+        return None
+    if feat["vol_ratio"] > cfg["vcp_dryup"]:               # 末段量縮
+        return None
+    # L6 進場: 突破 OR (MVP 啟用且成立)
+    vm50 = feat["vol_ma50"]
+    breakout = (feat["close"] > feat["pivot"]
+                and vm50 and feat["volume"] > cfg["breakout_vol_x"] * vm50)
+    mvp = (feat["up_days15"] >= 12 and feat["vol_ma20_ratio"] > 1.25
+           and feat["ret15"] >= 0.20)
+    if not (breakout or (cfg.get("use_mvp", True) and mvp)):
+        return None
+
+    sig = {
+        "score":           feat["rank"],
+        "minervini":       True,
+        "stop_pct":        cfg["stop_pct"],
+        "three_week_gain": cfg["three_week_gain"],
+        "max_hold":        cfg["max_hold"],
+    }
+    # 衝頂出場 (可選): climax_exit:False 時引擎完全停用此分支
+    if cfg.get("use_climax", True):
+        sig.update({
+            "climax_exit":       True,
+            "climax_sprint_pct": cfg["climax_sprint_pct"],
+            "climax_min_gain":   cfg["climax_min_gain"],
+            "extended_updays":   cfg["extended_updays"],
+            "extended_min_gain": cfg["extended_min_gain"],
+        })
+    return sig
+
+
+def signal_a(df, i, rs_rank=None):
+    """Minervini SEPA 完整版 (策略 A) — 六層漏斗.
+
+    L0 可交易性 → L1 負面排除 → L2 趨勢樣板 8 條 → L3 相對強度(併入 7a/7b)
+    → L4 基本面(無財報略) → L5 VCP 型態 → L6 進場(突破 OR MVP).
+    參數集中於 A_CONFIG, 方便 optimize_a 掃描.
+    """
+    return _a_signal(_a_features(df, i, rs_rank), A_CONFIG)
 
 
 def signal_c(df, i, rs_rank=None):
