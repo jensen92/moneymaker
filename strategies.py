@@ -33,17 +33,11 @@ def add_indicators(df):
                     np.maximum((df["high"] - df["close"].shift()).abs(),
                                (df["low"] - df["close"].shift()).abs()))
     df["atr14"] = tr.rolling(14).mean()
-    df["atr20"] = tr.rolling(20).mean()   # Turtle N
-    df["atr5"]  = tr.rolling(5).mean()
-    df["high60"]  = df["high"].rolling(60).max()
+    df["atr5"] = tr.rolling(5).mean()
+    df["high60"] = df["high"].rolling(60).max()
     df["high252"] = df["high"].rolling(252).max()
-    df["low252"]  = df["low"].rolling(252).min()
-    df["high20"]  = df["high"].rolling(20).max()
-    df["low10"]   = df["low"].rolling(10).min()   # Turtle System-1 exit
-    # Williams %R (14日)
-    hi14 = df["high"].rolling(14).max()
-    lo14 = df["low"].rolling(14).min()
-    df["willr"] = (hi14 - df["close"]) / (hi14 - lo14 + 1e-9) * -100
+    df["low252"] = df["low"].rolling(252).min()
+    df["high20"] = df["high"].rolling(20).max()
     return df
 
 
@@ -229,142 +223,4 @@ def signal_d(df, i, rs_rank=None):
 
 
 
-# ── 大師策略 ──────────────────────────────────────────────────────────────
-
-def signal_e(df, i):
-    """Turtle Trading System 1 (Richard Dennis & Bill Eckhardt, 1983).
-
-    規則來源: Curtis Faith《Way of the Turtle》2003 年公開版
-    哲學: 純價格趨勢跟蹤, 不看基本面/成交量/市場情緒, 只問「價格是否突破通道?」
-
-    進場: 收盤突破前 20 日最高價 (不含當日; 即 high20 前一日)
-    停損: 進場價 - 2 × N (N = ATR20, Turtle 對波動的基本單位)
-    出場: 收盤跌破前 10 日最低價 (low10 移動停利; 由引擎 trail_low 機制處理)
-    加碼: 每漲 0.5N 加 1 單位, 最多 4 單位 (本實作以 engine pyramid 近似)
-    部位: 1% 帳戶風險 / (2N × 股價) = 標準 Turtle Unit
-    不設獲利目標, 純靠移動停損讓趨勢自然結束
-    """
-    row = df.iloc[i]
-    if np.isnan(row["atr20"]) or row["close"] < 10:
-        return None
-    if row["volume"] * row["close"] < 30_000_000:   # 3000 萬流動性下限
-        return None
-    N = row["atr20"]
-    if N <= 0:
-        return None
-    # 突破條件: 收盤嚴格大於昨日為止的 20 日高
-    prior_high20 = df["high"].iloc[i - 20: i].max()
-    if row["close"] <= prior_high20:
-        return None
-    # 避免極度延伸 (單日漲幅 > 3N 視為 gap, 略過)
-    if row["close"] - df["close"].iloc[i - 1] > 3 * N:
-        return None
-    return {
-        "score":     row["close"] / prior_high20,   # 突破強度
-        "stop_atr":  2.0,     # 2N 停損
-        "trail_low": True,    # 引擎使用 low10 移動停利
-        "max_hold":  120,
-    }
-
-
-def signal_f(df, i):
-    """Darvas Box Theory (Nicolas Darvas, 1960 《How I Made $2,000,000 in the Stock Market》).
-
-    哲學: 股票先在「箱子」裡盤整, 代表多空達到平衡; 一旦放量突破箱頂,
-    代表供需失衡、新一段上漲啟動。資金管理: 停損在箱底, 新箱形成後上移。
-
-    箱頂確認 (box_top): 最近 N 日最高價, 且之後連續 3 日高點均未超過 (盤整確認)
-    箱底確認 (box_bot): 箱頂確認期間的最低收盤 (支撐)
-    進場: 今日收盤突破 box_top + 成交量 > 1.5× 20日均量 (放量確認)
-    停損: box_bot (箱底, 若超過 10% 則縮至 entry×0.90)
-    出場: 引擎停損 or 時間出場 (60日); 可觀察下一個箱子
-    """
-    row = df.iloc[i]
-    if np.isnan(row["ma50"]) or row["close"] < 10:
-        return None
-    if row["volume"] * row["close"] < 30_000_000:
-        return None
-
-    # 確認箱頂: 往回找最近的局部高點 (3 日高點確認)
-    # 掃描 i-25 ~ i-4 的窗口, 找最近一個 "3日後均未超越" 的高點
-    box_top = None
-    box_bot = None
-    for j in range(i - 4, max(i - 30, 3), -1):
-        candidate = df["high"].iloc[j]
-        # 候選高點之後 3 日內最高不超過 (盤整確認)
-        after_high = df["high"].iloc[j + 1: j + 4].max()
-        if after_high > candidate:
-            continue   # 高點被突破, 不是有效箱頂
-        # 確認後, 箱底 = 候選高點確認期間的最低收盤
-        box_region_low = df["low"].iloc[j: j + 4].min()
-        if candidate <= 0 or box_region_low <= 0:
-            continue
-        box_depth = (candidate - box_region_low) / candidate
-        if box_depth > 0.20:   # 箱子太深 (>20%) 視為盤整失敗
-            continue
-        box_top = candidate
-        box_bot = box_region_low
-        break
-
-    if box_top is None:
-        return None
-    # 今日突破箱頂 + 放量
-    if row["close"] <= box_top:
-        return None
-    if row["volume"] < 1.5 * row["vol_ma20"]:
-        return None
-    # 箱底停損, 上限 10%
-    stop_pct = min(0.10, max(0.03, 1.0 - box_bot / row["close"]))
-    return {
-        "score":    row["volume"] / row["vol_ma20"],
-        "stop_pct": round(stop_pct, 4),
-        "max_hold": 60,
-    }
-
-
-def signal_g(df, i):
-    """Larry Williams %R 超賣回升 (Larry Williams《Long-Term Secrets to Short-Term Trading》).
-
-    哲學: 在長期上升趨勢中, 短期超賣是進場機會而非逃命訊號。
-    Williams 強調「趨勢中的回調進場」是高勝率、低風險的交易模式。
-
-    條件:
-      1. 長期趨勢向上: close > MA200 且 MA200 呈上升 (21日前低)
-      2. 中期趨勢健康: close > MA50
-      3. 短期超賣: Williams %R(14) 今日 <= -80 (極度超賣)
-      4. 當日確認反彈: close > open (收紅 K, 顯示買盤介入)
-      5. 成交量 >= 均量 (確認有買盤, 非量縮下跌)
-    停損: 2 × ATR14 (Williams 強調嚴格停損)
-    停利: %R 回升至 -20 以上 (超買) 或 ATR Chandelier
-    持有: 短線 15 日
-    """
-    row = df.iloc[i]
-    if np.isnan(row["ma200"]) or np.isnan(row["willr"]) or row["close"] < 10:
-        return None
-    if row["volume"] * row["close"] < 30_000_000:
-        return None
-    # 長期 + 中期趨勢
-    uptrend = (row["close"] > row["ma200"]
-               and row["ma200"] > df["ma200"].iloc[i - 21]
-               and row["close"] > row["ma50"])
-    if not uptrend:
-        return None
-    # Williams %R 超賣確認反彈
-    oversold = row["willr"] <= -80
-    reversal = row["close"] > row["open"]           # 收紅 K
-    volume_ok = row["volume"] >= 0.8 * row["vol_ma20"]
-    if not (oversold and reversal and volume_ok):
-        return None
-    return {
-        "score":      -row["willr"],   # %R 越低越超賣, score 越高
-        "stop_atr":   2.0,
-        "willr_exit": True,            # 引擎: %R 回升至 -20 即出場
-        "trail_atr":  2.5,             # Chandelier 保底
-        "max_hold":   15,
-    }
-
-
-STRATEGIES = {
-    "A": signal_a, "B": signal_b, "C": signal_c, "D": signal_d,
-    "E": signal_e, "F": signal_f, "G": signal_g,
-}
+STRATEGIES = {"A": signal_a, "B": signal_b, "C": signal_c, "D": signal_d}

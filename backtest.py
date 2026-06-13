@@ -29,13 +29,11 @@ ALLOC = 0.5          # 每策略分配比例 (各 100 萬)
 RISK_PCT = 0.01      # 單筆風險
 PICKS_PER_DAY = 2    # 每子帳戶每日最多新倉
 # 各策略回撤保護閾值 (B 波動大,靠停損與部位控制,不設 pause 上限)
-DD_PAUSE  = {"A": 0.20, "B": 1.00, "C": 1.00, "D": 1.00,
-             "E": 1.00, "F": 1.00, "G": 0.20}
-DD_RESUME = {"A": 0.10, "B": 1.00, "C": 1.00, "D": 1.00,
-             "E": 1.00, "F": 1.00, "G": 0.10}
+DD_PAUSE = {"A": 0.20, "B": 1.00, "C": 1.00, "D": 1.00}   # A 在 20% 才暫停; B 靠停損控制不設 pause
+DD_RESUME = {"A": 0.10, "B": 1.00, "C": 1.00, "D": 1.00}
 
 # 各策略最大同時持倉 (持有期越長需要越多槽)
-MAX_POS = {"A": 5, "B": 10, "C": 8, "D": 8, "E": 10, "F": 8, "G": 5}
+MAX_POS = {"A": 5, "B": 10, "C": 8, "D": 8}
 
 # 三週法則參數 (策略 D): 突破後 THREE_WEEK_DAYS 日內漲幅 >= THREE_WEEK_GAIN
 # 即視為主升段, 取消 +20% 賣半, 讓強勢股自由奔跑 (各訊號可覆寫 three_week_gain)
@@ -81,8 +79,7 @@ def collect_signals(data, strategy_key):
     signals = defaultdict(list)
     needs_rs = strategy_key in ("C", "D")
     rs = compute_rs_rank(data) if needs_rs else None
-    # C/D 需要 MA200 (210 bar); E/G 需要 MA200 (210 bar); A/B/F 120 bar 足夠
-    min_i = 210 if strategy_key in ("C", "D", "E", "G") else 120
+    min_i = 210 if needs_rs else 120  # C/D 需要 MA200
     for code, df in data.items():
         for i in range(min_i, len(df) - 1):
             if needs_rs:
@@ -154,17 +151,10 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                 exit_price = row["open"] if row["open"] >= p["target"] else p["target"]
             elif p.get("minervini") and row["close"] < row["ma50"]:
                 exit_price = row["close"]   # 跌破 50 日線全部出場
-            elif p.get("willr_exit") and not np.isnan(row["willr"]) and row["willr"] >= -20:
-                exit_price = row["close"]   # Williams: %R 回升超買出場
             elif di >= p["expire_idx"]:
                 exit_price = row["close"]
 
             if exit_price is None:
-                # Turtle: 以 low10 做移動停利 (stop 只升不降)
-                if p.get("trail_low"):
-                    low10 = row.get("low10", np.nan)
-                    if not np.isnan(low10):
-                        p["stop"] = max(p["stop"], low10)
                 if p.get("trail_atr"):
                     p["high_close"] = max(p["high_close"], row["close"])
                     atr = row["atr14"] if not np.isnan(row["atr14"]) else p["init_atr"]
@@ -335,10 +325,8 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                     "stop": stop,
                     "init_stop": stop,
                     "target": target,
-                    "trail_atr":  s.get("trail_atr"),
-                    "trail_low":  s.get("trail_low", False),
-                    "willr_exit": s.get("willr_exit", False),
-                    "minervini":  s.get("minervini", False),
+                    "trail_atr": s.get("trail_atr"),
+                    "minervini": s.get("minervini", False),
                     "pyramid_adds": pyramid_adds,
                     "half_sold": False,
                     "three_week_hold": False,  # 三週法則旗標
