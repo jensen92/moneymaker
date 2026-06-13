@@ -436,7 +436,9 @@ def main():
 
     if args.data_dir:
         global DATA_DIR
-        DATA_DIR = os.path.join(os.path.dirname(__file__), args.data_dir)
+        # 支援絕對路徑 (地端資料如 /Users/.../adjusted_data) 與相對路徑
+        DATA_DIR = (args.data_dir if os.path.isabs(args.data_dir)
+                    else os.path.join(os.path.dirname(__file__), args.data_dir))
 
     strategies = tuple(args.strategies.split(","))
     print("載入資料...")
