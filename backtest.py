@@ -142,8 +142,18 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                                     p["high_close"] - p["trail_atr"] * atr)
                 if p.get("minervini"):
                     risk_per_sh = p["entry"] - p["init_stop"]
-                    # +20% 賣出一半鎖利
-                    if not p["half_sold"] and row["high"] >= p["entry"] * 1.20:
+                    days_held = di - p["entry_idx"]
+                    gain_pct = row["high"] / p["init_stop"] * (1 - p["init_stop"] / p["entry"]) \
+                               if p["entry"] > 0 else 0
+                    gain_pct = (row["close"] - p["entry"]) / p["entry"]
+                    # 三週法則: 突破後 15 日內漲 >= 20% → 延長持有 8 週, 跳過賣半
+                    if not p["three_week_hold"] and days_held <= 15:
+                        if row["high"] >= p["entry"] * 1.20:
+                            p["three_week_hold"] = True
+                            p["expire_idx"] = p["entry_idx"] + 56  # 8 週
+                    # +20% 賣出一半 (三週法則啟動時跳過)
+                    if (not p["half_sold"] and not p["three_week_hold"]
+                            and row["high"] >= p["entry"] * 1.20):
                         px = max(p["entry"] * 1.20, row["open"]) * (1 - SLIP)
                         half = p["shares"] // 2
                         if half > 0:
@@ -154,13 +164,13 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                                 "strategy": strategy_key, "code": p["code"],
                                 "entry_date": p["entry_date"], "exit_date": d,
                                 "entry": p["entry"], "exit": px, "pnl": pnl,
-                                "r": pnl / (half * risk_per_sh),
+                                "r": pnl / (half * risk_per_sh) if risk_per_sh > 0 else 0,
                             })
                             p["shares"] -= half
                             p["risk_amt"] = p["shares"] * risk_per_sh
                         p["half_sold"] = True
                     # 獲利達 3R 時停損上移至成本價 (保本)
-                    if row["close"] >= p["entry"] + 3 * risk_per_sh:
+                    if risk_per_sh > 0 and row["close"] >= p["entry"] + 3 * risk_per_sh:
                         p["stop"] = max(p["stop"], p["entry"])
                     # MA50 上穿成本價後改用 MA50 移動停損
                     if row["ma50"] >= p["entry"]:
@@ -192,6 +202,33 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
         elif dd <= dd_resume:
             paused = False
 
+        # pyramid 加碼 (先於新倉，利用當日行情)
+        for p in open_pos:
+            if not p.get("pyramid_adds"):
+                continue
+            di = date_idx[p["code"]].get(d)
+            if di is None:
+                continue
+            row = data[p["code"]].iloc[di]
+            done = []
+            for add in p["pyramid_adds"]:
+                if row["high"] >= add["trigger"]:
+                    add_px = max(add["trigger"], row["open"]) * (1 + SLIP)
+                    add_sh = add["shares"]
+                    notional_add = add_sh * add_px
+                    exposure_now = sum(q["shares"] * q["entry"] for q in open_pos)
+                    if exposure_now + notional_add <= equity * leverage and add_sh > 0:
+                        cost = add_sh * add_px * (1 + FEE)
+                        equity -= cost - add_sh * add_px  # 淨支出差額已在 pnl 計算時處理
+                        # 更新平均成本 (加權)
+                        total_sh = p["shares"] + add_sh
+                        p["entry"] = (p["shares"] * p["entry"] + add_sh * add_px) / total_sh
+                        p["shares"] = total_sh
+                        p["risk_amt"] = total_sh * (p["entry"] - p["init_stop"])
+                    done.append(add)
+            for a in done:
+                p["pyramid_adds"].remove(a)
+
         # 新倉
         if not paused:
             held = {p["code"] for p in open_pos}
@@ -216,12 +253,18 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                     continue
                 risk_per_sh = entry - stop
                 risk_amt = equity * RISK_PCT
-                shares = int(risk_amt / risk_per_sh / 1000) * 1000
-                if shares <= 0:
-                    shares = max(1, int(risk_amt / risk_per_sh))
-                if s.get("minervini"):  # 單一個股不超過子帳戶 25%
+                # pyramid: 計算全倉後初始只建 25%
+                full_shares = int(risk_amt / risk_per_sh / 1000) * 1000
+                if full_shares <= 0:
+                    full_shares = max(1, int(risk_amt / risk_per_sh))
+                if s.get("minervini"):
                     cap = int(equity * 0.25 / entry / 1000) * 1000
-                    shares = min(shares, max(cap, 1))
+                    full_shares = min(full_shares, max(cap, 1))
+                if s.get("pyramid"):
+                    init_shares = max(1, full_shares // 4)
+                else:
+                    init_shares = full_shares
+                shares = init_shares
                 notional = shares * entry
                 if exposure + notional > equity * leverage:
                     allowed = equity * leverage - exposure
@@ -229,8 +272,19 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                     if shares <= 0:
                         continue
                     notional = shares * entry
+                    full_shares = shares
                 target = (entry + s["target_r"] * risk_per_sh
                           if "target_r" in s else None)
+                # 準備 pyramid 加碼批次
+                pyramid_adds = []
+                if s.get("pyramid") and full_shares > shares:
+                    rem = full_shares - shares
+                    add1 = max(1, rem // 3)
+                    add2 = rem - add1
+                    pyramid_adds = [
+                        {"trigger": entry * 1.02, "shares": add1},
+                        {"trigger": entry * 1.04, "shares": add2},
+                    ]
                 open_pos.append({
                     "code": code,
                     "shares": shares,
@@ -240,7 +294,9 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                     "target": target,
                     "trail_atr": s.get("trail_atr"),
                     "minervini": s.get("minervini", False),
+                    "pyramid_adds": pyramid_adds,
                     "half_sold": False,
+                    "three_week_hold": False,  # 三週法則旗標
                     "high_close": entry,
                     "init_atr": atr,
                     "entry_idx": ei,

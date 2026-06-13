@@ -135,51 +135,64 @@ def signal_c(df, i, rs_rank=None):
     return None
 
 
-def _vcp_pattern(df, i, base_len=45, n_seg=3):
-    """偵測波動收縮型態 (VCP): 基底內逐段收縮的回檔.
+def _vcp_swings(df, i, lookback=60, req=2):
+    """以真實局部高低點偵測 VCP 收縮擺動.
 
-    將突破日前 base_len 日切成 n_seg 段, 各段深度 = (段高-段低)/段高.
-    要求: 深度逐段遞減, 末段 <= 10%, 首段 <= 35% (深度過大代表基底失敗),
-          末段均量 < 首段均量 (供給枯竭).
-    回傳 (pivot, last_low, last_depth) 或 None.
+    在突破日前 lookback 根 K 線內找局部高點 (3-bar local max),
+    測量每次高點到後續低點的回檔深度. 要求:
+      - 至少 req 次擺動且深度逐次遞減
+      - 末次深度 <= 12%, 首次深度 <= 40%
+      - 末次均量 < 首次均量 (供給枯竭)
+    回傳 (pivot_high, pivot_low, last_depth) 或 None.
     """
-    if i < base_len:
+    start = i - lookback
+    if start < 5:
         return None
-    seg = base_len // n_seg
-    depths, vols = [], []
-    last_high = last_low = None
-    for k in range(n_seg):
-        s = i - base_len + k * seg
-        e = s + seg
-        hi = df["high"].iloc[s:e].max()
-        lo = df["low"].iloc[s:e].min()
+    swing_highs = []
+    for j in range(start + 3, i - 2):
+        h = df["high"].iloc[j]
+        if h == df["high"].iloc[j - 3: j + 3].max():
+            swing_highs.append(j)
+
+    if len(swing_highs) < req + 1:
+        return None
+
+    swings = []
+    for k in range(len(swing_highs) - 1):
+        j0, j1 = swing_highs[k], swing_highs[k + 1]
+        hi = df["high"].iloc[j0]
+        lo = df["low"].iloc[j0:j1 + 1].min()
         if hi <= 0:
-            return None
-        depths.append((hi - lo) / hi)
-        vols.append(df["volume"].iloc[s:e].mean())
-        if k == n_seg - 1:
-            last_high, last_low = hi, lo
-    if not all(depths[k] > depths[k + 1] for k in range(n_seg - 1)):
+            continue
+        vol = df["volume"].iloc[max(j0 - 2, 0): j0 + 3].mean()
+        swings.append({"hi": hi, "lo": lo, "depth": (hi - lo) / hi, "vol": vol})
+
+    if len(swings) < req:
         return None
-    if depths[-1] > 0.10 or depths[0] > 0.35:
+
+    last = swings[-req:]
+    if not all(last[k]["depth"] > last[k + 1]["depth"] for k in range(req - 1)):
         return None
-    if vols[-1] >= vols[0]:          # 量未隨基底收縮
+    if last[-1]["depth"] > 0.12 or last[0]["depth"] > 0.40:
         return None
-    return last_high, last_low, depths[-1]
+    if last[-1]["vol"] >= last[0]["vol"]:
+        return None
+
+    return last[-1]["hi"], last[-1]["lo"], last[-1]["depth"]
 
 
 def signal_d(df, i, rs_rank=None):
-    """Mark Minervini SEPA 完整版 (策略 D).
+    """Mark Minervini SEPA 原版精神 (策略 D v2).
 
-    與策略 C 差異:
-      - RS rank 門檻 85 (Minervini 原則: RS >= 85-90)
-      - 嚴格 VCP: 基底 45 日切 3 段, 回檔深度逐段收縮 (T1>T2>T3),
-        末段 <= 10%, 量逐段枯竭
-      - 樞軸突破: 收盤突破末段高點 (pivot) + 放量 > 1.5x 50日均量
-      - 突破日漲幅 <= 10% (避免追過度延伸)
-      - 停損: 末段低點與 8% 取較近者 (下限 4%), 風報比更佳
-    出場沿用 Minervini 引擎邏輯 (跌破 MA50 全出 / +20% 賣半 /
-    3R 保本 / MA50 移動停損), 最長持有 90 日.
+    改進點 (vs. 策略 C):
+      - RS rank >= 80 (原著建議 80-90)
+      - Swing-based VCP: 真實局部高低點偵測, 2 次收縮即可
+      - 停損緊貼 VCP 末段低點 (5-10%), 而非固定 8%
+      - 突破日漲幅 <= 10% (不追過度延伸)
+      - 回傳 pyramid=True → 引擎執行分批加碼
+        第一批 25% @ 突破, 第二批 25% @ +2%, 第三批 50% @ +4%
+      - 三週法則: 突破後 15 日內漲 >= 20% → 持有 8 週 (56 日) 不賣
+    出場: 跌破 MA50 全出 / MA50 移動停損 / 最長 90 日
     """
     row = df.iloc[i]
     if np.isnan(row["ma200"]) or np.isnan(row["low252"]) or row["close"] < 10:
@@ -197,21 +210,30 @@ def signal_d(df, i, rs_rank=None):
     )
     if not template:
         return None
-    if rs_rank is None or rs_rank < 0.85:
+    if rs_rank is None or rs_rank < 0.80:
         return None
-    vcp = _vcp_pattern(df, i)
+
+    vcp = _vcp_swings(df, i, lookback=60, req=2)
     if vcp is None:
         return None
-    pivot, last_low, last_depth = vcp
+    pivot, pivot_low, last_depth = vcp
+
     breakout = (row["close"] > pivot
                 and row["volume"] > 1.5 * row["vol_ma50"]
                 and row["close"] / df["close"].iloc[i - 1] - 1 <= 0.10)
     if not breakout:
         return None
-    # 停損放在末段低點下方一點, 介於 4%~8%
-    stop_pct = min(0.08, max(0.04, 1 - last_low / row["close"] + 0.01))
-    return {"score": rs_rank, "minervini": True,
-            "stop_pct": round(stop_pct, 4), "max_hold": 90}
+
+    # 停損緊貼 VCP 末段低點，介於 5%~10%
+    raw_stop = 1.0 - pivot_low / row["close"] + 0.005
+    stop_pct = float(np.clip(raw_stop, 0.05, 0.10))
+    return {
+        "score":    rs_rank,
+        "minervini": True,
+        "pyramid":  True,          # 分批加碼旗標
+        "stop_pct": round(stop_pct, 4),
+        "max_hold": 90,
+    }
 
 
 STRATEGIES = {"A": signal_a, "B": signal_b, "C": signal_c, "D": signal_d}
