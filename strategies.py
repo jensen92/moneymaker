@@ -82,12 +82,18 @@ def _vcp_raw(df, i, window=4, lookback=120):
     return swings, vol_ratio, pivot
 
 
+# 策略 A 進場參數 (optimize_a.py 消融 + 144 組掃描最佳 MAR 組合)
+#   baseline (原版): CAGR 0.8% / DD 22.6% / MAR 0.04 / PF 1.05  ← 規則互相打架
+#   優化後         : CAGR 6.2% / DD 19.1% / MAR 0.32 / PF 1.48  (近三年 CAGR 15.3%)
+#   關鍵發現: 條件 7b (RS 線上升) 反而是最大拖累 — 關閉後 PF 1.05→1.23;
+#            再配合 RS 0.85 + 8% 停損 + 三週法則 0.30 把 MAR 推到 0.32.
+#            衝頂出場 (use_climax) 經消融證實「保留較好」(關閉反而變差).
 A_CONFIG = {
     # L2 趨勢樣板
-    "rs_min":              0.70,   # RS 百分位 >= 70 (嚴格版 0.80~0.90)
-    "use_rs_uptrend":      True,   # 是否套用條件 7b (RS 線上升趨勢)
+    "rs_min":              0.85,   # RS 百分位門檻 (掃描最佳, 提升突破品質)
+    "use_rs_uptrend":      False,  # 條件 7b (RS 線上升): 消融證實為負貢獻, 關閉
     # L1 負面排除
-    "use_l1":              True,   # 是否套用 L1 負面排除 (下跳空/高量長黑)
+    "use_l1":              True,   # 套用 L1 負面排除 (下跳空/高量長黑)
     # L5 VCP
     "vcp_T_min":           2,      # 最少收縮次數 T
     "vcp_T_max":           6,      # 最多收縮次數 T
@@ -97,10 +103,10 @@ A_CONFIG = {
     "vcp_dryup":           0.85,   # 末段均量 / 整段均量 上限 (台股流動性較低)
     # L6 進場
     "breakout_vol_x":      1.5,    # 突破放量倍數
-    "use_mvp":             True,   # 是否啟用 MVP 追勢進場 (突破 OR MVP)
+    "use_mvp":             True,   # 啟用 MVP 追勢進場 (突破 OR MVP)
     # 停損 / 持有
-    "stop_pct":            0.07,   # 初始停損 7%（平均目標 5–6%，最大 10%）
-    "three_week_gain":     0.20,   # 三週法則: N 日內漲幅 >= 此值即讓利潤奔跑
+    "stop_pct":            0.08,   # 初始停損 8% (寬停損反而少被洗出)
+    "three_week_gain":     0.30,   # 三週法則: N 日內漲幅 >= 此值即讓利潤奔跑
     "max_hold":            90,
     # 出場：衝頂 (強勢賣出)
     "use_climax":          True,   # 是否啟用衝頂出場 (強勢賣在上漲中)
@@ -305,18 +311,19 @@ def signal_c(df, i, rs_rank=None):
     return None
 
 
-# 策略 D 進場參數 (optimize_d.py 全期 54 組掃描最佳 MAR 組合)
-#   舊 D v4: rs 0.80 / stop 0.07 / tw 0.20 → +550% 但 MaxDD 29% (MAR~0.46)
-#   優化後 : rs 0.85 / stop 0.08 / tw 0.25 → +509% 且 MaxDD 20% (MAR 0.62)
-#   關鍵: 較寬 8% 停損避免強勢突破被洗、RS 提高到 85 提升突破品質
+# 策略 D 進場參數 (optimize_d.py 核心 + optimize_d2.py 深度掃描進場品質)
+#   v5 (rs0.85/stop0.08/tw0.25, gain_cap0.10, max_hold90): +509% DD20% MAR0.62
+#   v6 優化後 (gain_cap0.08, max_hold120)               : +418% DD12% MAR0.99 PF2.15
+#   關鍵: 突破日漲幅上限收緊到 8% (不追過熱突破) 砍掉最深回撤; 最長持有拉到
+#        120 日讓主升段奔跑. 報酬略降但 MaxDD 由 20% 砍半至 12%, 近三年 MAR 3.3.
 D_CONFIG = {
     "rs_min":          0.85,  # RS 百分位門檻
     "stop_pct":        0.08,  # 初始停損 (寬停損反而少被洗出)
-    "gain_cap":        0.10,  # 突破日漲幅上限 (不追高)
+    "gain_cap":        0.08,  # 突破日漲幅上限 (收緊到 8%, 不追過熱突破)
     "contraction":     0.80,  # ATR5/ATR14 收縮門檻 (越小越嚴)
     "vol_mult":        1.5,   # 突破日量 / 50日均量 門檻
     "three_week_gain": 0.25,  # 三週法則: N日內漲幅 >= 此值即讓利潤奔跑
-    "max_hold":        90,
+    "max_hold":        120,   # 最長持有 (拉長讓主升段奔跑)
 }
 
 
