@@ -35,6 +35,11 @@ DD_RESUME = {"A": 0.10, "B": 1.00, "C": 1.00, "D": 1.00}
 # 各策略最大同時持倉 (持有期越長需要越多槽)
 MAX_POS = {"A": 5, "B": 10, "C": 8, "D": 8}
 
+# 三週法則參數 (策略 D): 突破後 THREE_WEEK_DAYS 日內漲幅 >= THREE_WEEK_GAIN
+# 即視為主升段, 取消 +20% 賣半, 讓強勢股自由奔跑
+THREE_WEEK_GAIN = 0.20
+THREE_WEEK_DAYS = 15
+
 
 def load_all():
     data = {}
@@ -100,8 +105,20 @@ def build_entry_map(signals, data):
     return entry_map
 
 
-def run_sub(data, entry_map, strategy_key, leverage, init_eq):
-    """單一策略子帳戶回測."""
+def build_date_index(data):
+    """預先建立 (所有交易日, 各檔日期→列索引) 供多次回測共用, 避免重建."""
+    all_dates = sorted({d for df in data.values() for d in df["date"]})
+    date_idx = {code: {d: i for i, d in enumerate(df["date"])}
+                for code, df in data.items()}
+    return all_dates, date_idx
+
+
+def run_sub(data, entry_map, strategy_key, leverage, init_eq,
+            all_dates=None, date_idx=None):
+    """單一策略子帳戶回測.
+
+    all_dates / date_idx 可預先以 build_date_index 算好傳入 (參數掃描加速).
+    """
     max_pos = MAX_POS[strategy_key]
     dd_pause = DD_PAUSE[strategy_key]
     dd_resume = DD_RESUME[strategy_key]
@@ -111,9 +128,8 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
     open_pos = []
     trades = []
     curve = []
-    all_dates = sorted({d for df in data.values() for d in df["date"]})
-    date_idx = {code: {d: i for i, d in enumerate(df["date"])}
-                for code, df in data.items()}
+    if all_dates is None or date_idx is None:
+        all_dates, date_idx = build_date_index(data)
 
     for d in all_dates:
         # 出場
@@ -143,15 +159,12 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                 if p.get("minervini"):
                     risk_per_sh = p["entry"] - p["init_stop"]
                     days_held = di - p["entry_idx"]
-                    gain_pct = row["high"] / p["init_stop"] * (1 - p["init_stop"] / p["entry"]) \
-                               if p["entry"] > 0 else 0
-                    gain_pct = (row["close"] - p["entry"]) / p["entry"]
                     init_entry = p.get("init_entry", p["entry"])
-                    # 三週法則: 突破後 15 日內漲 >= 20% → 跳過賣半, 讓強勢股自由奔跑
-                    if not p["three_week_hold"] and days_held <= 15:
-                        if row["high"] >= init_entry * 1.20:
+                    # 三週法則: 突破後 N 日內漲 >= G → 跳過賣半, 讓強勢股自由奔跑
+                    if not p["three_week_hold"] and days_held <= THREE_WEEK_DAYS:
+                        if row["high"] >= init_entry * (1 + THREE_WEEK_GAIN):
                             p["three_week_hold"] = True
-                            # 不改 expire_idx (90天), 只取消 +20% 賣半動作
+                            # 不改 expire_idx, 只取消 +20% 賣半動作
                     # +20% 賣出一半 (三週法則啟動時跳過)
                     if (not p["half_sold"] and not p["three_week_hold"]
                             and row["high"] >= init_entry * 1.20):

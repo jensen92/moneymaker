@@ -135,68 +135,21 @@ def signal_c(df, i, rs_rank=None):
     return None
 
 
-def _vcp_swings(df, i, lookback=60, req=2, min_spacing=8):
-    """以真實局部高低點偵測 VCP 收縮擺動.
-
-    在突破日前 lookback 根 K 線內找局部高點 (5-bar local max),
-    測量每次高點到後續低點的回檔深度. 要求:
-      - 至少 req 次擺動且深度逐次遞減
-      - 首次深度 >= 5% (擺動要有意義), 末次深度 <= 12%
-      - 首次深度 <= 40%, 末次均量 < 首次均量 (供給枯竭)
-    回傳 (pivot_high, pivot_low, last_depth) 或 None.
-    """
-    start = i - lookback
-    if start < 8:
-        return None
-    swing_highs = []
-    for j in range(start + 5, i - 4):
-        h = df["high"].iloc[j]
-        if h == df["high"].iloc[j - 5: j + 5].max():
-            if not swing_highs or j - swing_highs[-1] >= min_spacing:
-                swing_highs.append(j)
-
-    if len(swing_highs) < req + 1:
-        return None
-
-    # 只取最後 req+1 個擺動高點
-    swing_highs = swing_highs[-(req + 1):]
-    swings = []
-    for k in range(len(swing_highs) - 1):
-        j0, j1 = swing_highs[k], swing_highs[k + 1]
-        hi = df["high"].iloc[j0]
-        lo = df["low"].iloc[j0: j1 + 1].min()
-        if hi <= 0:
-            continue
-        vol = df["volume"].iloc[max(j0 - 2, 0): j0 + 3].mean()
-        swings.append({"hi": hi, "lo": lo, "depth": (hi - lo) / hi, "vol": vol})
-
-    if len(swings) < req:
-        return None
-
-    last = swings[-req:]
-    if not all(last[k]["depth"] > last[k + 1]["depth"] for k in range(req - 1)):
-        return None
-    if last[0]["depth"] < 0.05 or last[0]["depth"] > 0.40:  # 首段需有意義
-        return None
-    if last[-1]["depth"] > 0.12:
-        return None
-    if last[-1]["vol"] >= last[0]["vol"]:
-        return None
-
-    return last[-1]["hi"], last[-1]["lo"], last[-1]["depth"]
+# 策略 D 進場參數 (可由優化腳本覆寫做參數掃描)
+D_CONFIG = {
+    "rs_min":       0.80,   # RS 百分位門檻
+    "stop_pct":     0.07,   # 初始停損
+    "gain_cap":     0.10,   # 突破日漲幅上限 (不追高)
+    "contraction":  0.80,   # ATR5/ATR14 收縮門檻 (越小越嚴)
+    "vol_mult":     1.5,    # 突破日量 / 50日均量 門檻
+    "max_hold":     90,
+}
 
 
-def signal_d(df, i, rs_rank=None):
-    """Mark Minervini SEPA 精髓版 (策略 D v3).
+def _d_features(df, i, rs_rank):
+    """抽取策略 D 所需的原始特徵 (與參數無關), 模板不過則回傳 None.
 
-    在策略 C 已驗證的進場邏輯基礎上, 加入 Minervini 原版獨有的兩個機制:
-      1. Pyramid 分批加碼: 突破建 25% 倉, 漲 2% 加 25%, 漲 4% 補滿 50%
-      2. 三週法則: 突破後 15 日內漲 >= 20% → 延長持有 8 週
-
-    進場與 C 相同但門檻更嚴:
-      - RS rank >= 80 (C 是 70)
-      - 突破日漲幅 <= 10% (不追高)
-      - 停損 7% (C 是 8%)
+    供 signal_d 與優化掃描共用: 模板與原始量價只算一次, 各參數組合再套門檻.
     """
     row = df.iloc[i]
     if np.isnan(row["ma200"]) or np.isnan(row["low252"]) or row["close"] < 10:
@@ -214,23 +167,54 @@ def signal_d(df, i, rs_rank=None):
     )
     if not template:
         return None
-    if rs_rank is None or rs_rank < 0.80:
-        return None
     prev = df.iloc[i - 1]
-    contraction = prev["atr5"] < 0.80 * prev["atr14"]
-    vol_dryup = prev["volume"] < prev["vol_ma50"]
     prior_high20 = df["high"].iloc[i - 20: i].max()
-    breakout = (row["close"] > prior_high20
-                and row["volume"] > 1.5 * row["vol_ma50"]
-                and row["close"] / prev["close"] - 1 <= 0.10)
-    if not (contraction and vol_dryup and breakout):
+    atr14 = prev["atr14"]
+    volma = row["vol_ma50"]
+    return {
+        "rank":         rs_rank,
+        "contraction":  (prev["atr5"] / atr14) if atr14 and atr14 > 0 else 9.9,
+        "vol_dryup":    prev["volume"] < prev["vol_ma50"],
+        "breakout":     row["close"] > prior_high20,
+        "vol_surge":    (row["volume"] / volma) if volma and volma > 0 else 0.0,
+        "gain":         row["close"] / prev["close"] - 1.0,
+    }
+
+
+def _d_signal(feat, cfg):
+    """以參數組合 cfg 對特徵 feat 判定訊號, 回傳訊號字典或 None."""
+    if feat is None:
+        return None
+    if feat["rank"] is None or feat["rank"] < cfg["rs_min"]:
+        return None
+    if not (feat["contraction"] < cfg["contraction"]):
+        return None
+    if not feat["vol_dryup"]:
+        return None
+    if not (feat["breakout"]
+            and feat["vol_surge"] > cfg["vol_mult"]
+            and feat["gain"] <= cfg["gain_cap"]):
         return None
     return {
-        "score":     rs_rank,
+        "score":     feat["rank"],
         "minervini": True,
-        "stop_pct":  0.07,
-        "max_hold":  90,
+        "stop_pct":  cfg["stop_pct"],
+        "max_hold":  cfg["max_hold"],
     }
+
+
+def signal_d(df, i, rs_rank=None):
+    """Mark Minervini SEPA 精髓版 (策略 D).
+
+    在策略 C 已驗證的趨勢模板 + 波動收縮突破基礎上, 加入 Minervini 原版的
+    「三週法則」(突破後 15 日內漲 >= 20% 即視為主升段, 不執行 +20% 賣半,
+    讓強勢股自由奔跑; 由回測引擎處理), 並收緊進場門檻:
+      - RS rank >= 80 (C 是 70)
+      - 突破日漲幅 <= 10% (不追高)
+      - 停損 7% (C 是 8%)
+    參數集中於 D_CONFIG, 方便優化掃描.
+    """
+    return _d_signal(_d_features(df, i, rs_rank), D_CONFIG)
 
 
 STRATEGIES = {"A": signal_a, "B": signal_b, "C": signal_c, "D": signal_d}
