@@ -1,4 +1,4 @@
-"""組合回測: 200 萬本金, 策略 A / B 各 50% 獨立資金池.
+"""組合回測: 200 萬本金, 策略 C / D 各 50% 獨立資金池.
 
 交易成本: 手續費 0.1425% 買賣各一次, 證交稅 0.3% (賣出), 滑價 0.1% 單邊.
 進場: 訊號日次日開盤價. 出場: 停損/停利或時間出場.
@@ -6,8 +6,7 @@
 部位控制 (各子帳戶):
   - 單筆風險 = 當日子帳戶權益 × RISK_PCT
   - 名目曝險上限 = 子帳戶權益 × 槓桿
-  - 策略 A: 最大 5 檔同時持倉, 每日最多 2 檔新倉
-  - 策略 B: 最大 10 檔同時持倉, 每日最多 2 檔新倉
+  - 策略 C/D: 最大 8 檔同時持倉, 每日最多 2 檔新倉
   - 回撤保護: 子帳戶從峰值回撤 > DD_PAUSE 時暫停, 縮回 DD_RESUME 以內恢復
 """
 import argparse
@@ -29,11 +28,11 @@ ALLOC = 0.5          # 每策略分配比例 (各 100 萬)
 RISK_PCT = 0.01      # 單筆風險
 PICKS_PER_DAY = 2    # 每子帳戶每日最多新倉
 # 各策略回撤保護閾值 (B 波動大,靠停損與部位控制,不設 pause 上限)
-DD_PAUSE = {"A": 0.20, "B": 1.00, "C": 1.00, "D": 1.00}   # A 在 20% 才暫停; B 靠停損控制不設 pause
-DD_RESUME = {"A": 0.10, "B": 1.00, "C": 1.00, "D": 1.00}
+DD_PAUSE  = {"C": 1.00, "D": 1.00}
+DD_RESUME = {"C": 1.00, "D": 1.00}
 
 # 各策略最大同時持倉 (持有期越長需要越多槽)
-MAX_POS = {"A": 5, "B": 10, "C": 8, "D": 8}
+MAX_POS = {"C": 8, "D": 8}
 
 # 三週法則參數 (策略 D): 突破後 THREE_WEEK_DAYS 日內漲幅 >= THREE_WEEK_GAIN
 # 即視為主升段, 取消 +20% 賣半, 讓強勢股自由奔跑 (各訊號可覆寫 three_week_gain)
@@ -416,7 +415,7 @@ def report(trades, combined, curves, leverage):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--leverage", type=float, default=2.0)
-    ap.add_argument("--strategies", default="A,B",
+    ap.add_argument("--strategies", default="C,D",
                     help="逗號分隔, 例如 A,B,C")
     ap.add_argument("--data-dir", default=None,
                     help="覆寫資料目錄 (例如 data_adj)")
