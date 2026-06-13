@@ -27,7 +27,7 @@ from strategies import _a_features, _a_signal
 
 TRADE_START = pd.Timestamp("2023-06-01")
 INIT_EQ = INIT_CAPITAL / 3
-CAGR_FLOOR = 0.08          # 平衡選優: 年化下限 8%
+CAGR_FLOOR = 0.04          # 平衡選優: A 年化下限 (A 結構上弱於 C/D, floor 設實際些)
 
 
 def precompute_candidates(data, rs):
@@ -164,26 +164,29 @@ def main():
 
     # ───── Stage 2: 參數網格 ─────────────────────────────────────────────
     print("\n" + "=" * 96)
-    print("Stage 2  參數網格掃描")
+    print("Stage 2  參數網格掃描 (消融定向: rsup 為主軸, climax 固定 ON)")
     print("=" * 96)
+    # 消融結論: use_rs_uptrend=False 大幅較佳; use_climax=False 反而變差 → 固定 ON.
+    # 主掃 rsup × l1 × stop × rs × tw, mvp 固定 ON (mvp_OFF 影響中性).
     grid = list(itertools.product(
-        [True, False],          # use_climax
-        [True, False],          # use_mvp
+        [False, True],          # use_rs_uptrend (消融顯示 OFF 大幅較佳)
+        [True, False],          # use_l1
         [0.07, 0.08, 0.10],     # stop_pct
-        [0.70, 0.80, 0.90],     # rs_min
-        [0.20, 0.25],           # three_week_gain
+        [0.70, 0.80, 0.85],     # rs_min
+        [0.25, 0.30],           # three_week_gain
     ))
     print(f"掃描 {len(grid)} 組...\n")
-    for n, (clx, mvp, stop, rsm, tw) in enumerate(grid, 1):
+    for n, (rsup, l1, stop, rsm, tw) in enumerate(grid, 1):
         cfg = dict(base)
-        cfg.update({"use_climax": clx, "use_mvp": mvp, "stop_pct": stop,
-                    "rs_min": rsm, "three_week_gain": tw})
+        cfg.update({"use_rs_uptrend": rsup, "use_l1": l1, "use_climax": True,
+                    "use_mvp": True, "stop_pct": stop, "rs_min": rsm,
+                    "three_week_gain": tw})
         full, three = eval_config(data, cands, risk_on, cfg, all_dates, date_idx)
         if full is None or full["n"] < 30:
             continue
         tag = f"g{n:03d}"
         r = _row(tag, cfg, full, three); rows.append(r)
-        print(f"[{n:>3}/{len(grid)}] clx={int(clx)} mvp={int(mvp)} "
+        print(f"[{n:>3}/{len(grid)}] rsup={int(rsup)} l1={int(l1)} "
               f"stop={stop:.2f} rs={rsm:.2f} tw={tw:.2f} | "
               f"14y {full['ret']:+.0%} CAGR {full['cagr']:+.1%} "
               f"DD {full['dd']:.1%} MAR {full['mar']:.2f} PF {full['pf']:.2f} "
@@ -201,7 +204,7 @@ def main():
         print("無組合達 CAGR 下限, 改取全網格 MAR 最高:")
         elig = grid_rows
     top = elig.sort_values("mar_14y", ascending=False).head(10)
-    cols = ["tag", "rs", "stop", "tw", "climax", "mvp",
+    cols = ["tag", "rsup", "l1", "rs", "stop", "tw",
             "ret_14y", "cagr_14y", "dd_14y", "mar_14y", "pf_14y", "wr_14y",
             "n_14y", "cagr_3y", "dd_3y"]
     print("\n依 MAR_14y 排序 (CAGR 下限過濾後) 前 10:")
@@ -213,7 +216,7 @@ def main():
     if not top.empty:
         b = top.iloc[0]
         print("\n>>> 建議最佳組合:")
-        print(f"    use_climax={b['climax']}  use_mvp={b['mvp']}  "
+        print(f"    use_rs_uptrend={b['rsup']}  use_l1={b['l1']}  "
               f"stop_pct={b['stop']}  rs_min={b['rs']}  three_week_gain={b['tw']}")
         print(f"    14y: {b['ret_14y']:+.0%} / CAGR {b['cagr_14y']:+.1%} / "
               f"DD {b['dd_14y']:.1%} / MAR {b['mar_14y']:.2f} / PF {b['pf_14y']:.2f}")
