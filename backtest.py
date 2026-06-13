@@ -115,6 +115,37 @@ def build_date_index(data):
     return all_dates, date_idx
 
 
+def _climax_run(df, di, p):
+    """衝頂 / 延長訊號: 強勢賣出條件 (§10.2).
+
+    衝頂: 近 15 日漲幅 >= climax_sprint_pct 且總獲利 >= climax_min_gain
+    延長: 近 10 日上漲天數 >= extended_updays 且總獲利 >= extended_min_gain
+    """
+    entry_idx = p["entry_idx"]
+    days_held = di - entry_idx
+    if days_held < 5:
+        return False
+    init_entry = p.get("init_entry", p["entry"])
+    cur_gain = df["close"].iloc[di] / init_entry - 1.0
+
+    # 衝頂訊號
+    sprint_days = min(15, days_held)
+    sprint_gain = df["close"].iloc[di] / df["close"].iloc[di - sprint_days] - 1.0
+    climax = (sprint_gain >= p.get("climax_sprint_pct", 0.25)
+              and cur_gain >= p.get("climax_min_gain", 0.30))
+
+    # 延長訊號
+    start_k = max(entry_idx + 1, di - 9)
+    up_days = sum(
+        1 for k in range(start_k, di + 1)
+        if df["close"].iloc[k] > df["close"].iloc[k - 1]
+    )
+    extended = (up_days >= p.get("extended_updays", 7)
+                and cur_gain >= p.get("extended_min_gain", 0.20))
+
+    return climax or extended
+
+
 def run_sub(data, entry_map, strategy_key, leverage, init_eq,
             all_dates=None, date_idx=None):
     """單一策略子帳戶回測.
@@ -148,6 +179,8 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                 exit_price = min(p["stop"], row["open"])
             elif p["target"] is not None and row["high"] >= p["target"]:
                 exit_price = row["open"] if row["open"] >= p["target"] else p["target"]
+            elif p.get("climax_exit") and _climax_run(data[p["code"]], di, p):
+                exit_price = row["close"]   # 衝頂強勢賣出
             elif p.get("minervini") and row["close"] < row["ma50"]:
                 exit_price = row["close"]   # 跌破 50 日線全部出場
             elif di >= p["expire_idx"]:
@@ -330,6 +363,11 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                     "half_sold": False,
                     "three_week_hold": False,  # 三週法則旗標
                     "three_week_gain": s.get("three_week_gain", THREE_WEEK_GAIN),
+                    "climax_exit":       s.get("climax_exit", False),
+                    "climax_sprint_pct": s.get("climax_sprint_pct", 0.25),
+                    "climax_min_gain":   s.get("climax_min_gain", 0.30),
+                    "extended_updays":   s.get("extended_updays", 7),
+                    "extended_min_gain": s.get("extended_min_gain", 0.20),
                     "high_close": entry,
                     "init_atr": atr,
                     "entry_idx": ei,
