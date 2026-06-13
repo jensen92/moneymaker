@@ -146,14 +146,15 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                     gain_pct = row["high"] / p["init_stop"] * (1 - p["init_stop"] / p["entry"]) \
                                if p["entry"] > 0 else 0
                     gain_pct = (row["close"] - p["entry"]) / p["entry"]
-                    # 三週法則: 突破後 15 日內漲 >= 20% → 延長持有 8 週, 跳過賣半
+                    init_entry = p.get("init_entry", p["entry"])
+                    # 三週法則: 突破後 15 日內漲 >= 20% → 跳過賣半, 讓強勢股自由奔跑
                     if not p["three_week_hold"] and days_held <= 15:
-                        if row["high"] >= p["entry"] * 1.20:
+                        if row["high"] >= init_entry * 1.20:
                             p["three_week_hold"] = True
-                            p["expire_idx"] = p["entry_idx"] + 56  # 8 週
+                            # 不改 expire_idx (90天), 只取消 +20% 賣半動作
                     # +20% 賣出一半 (三週法則啟動時跳過)
                     if (not p["half_sold"] and not p["three_week_hold"]
-                            and row["high"] >= p["entry"] * 1.20):
+                            and row["high"] >= init_entry * 1.20):
                         px = max(p["entry"] * 1.20, row["open"]) * (1 - SLIP)
                         half = p["shares"] // 2
                         if half > 0:
@@ -218,13 +219,14 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                     notional_add = add_sh * add_px
                     exposure_now = sum(q["shares"] * q["entry"] for q in open_pos)
                     if exposure_now + notional_add <= equity * leverage and add_sh > 0:
-                        cost = add_sh * add_px * (1 + FEE)
-                        equity -= cost - add_sh * add_px  # 淨支出差額已在 pnl 計算時處理
-                        # 更新平均成本 (加權)
                         total_sh = p["shares"] + add_sh
                         p["entry"] = (p["shares"] * p["entry"] + add_sh * add_px) / total_sh
                         p["shares"] = total_sh
-                        p["risk_amt"] = total_sh * (p["entry"] - p["init_stop"])
+                        # 停損隨加碼上移
+                        if "new_stop_frac" in add:
+                            new_stop = p["init_entry"] * add["new_stop_frac"]
+                            p["stop"] = max(p["stop"], new_stop)
+                        p["risk_amt"] = total_sh * (p["entry"] - p["stop"])
                     done.append(add)
             for a in done:
                 p["pyramid_adds"].remove(a)
@@ -281,14 +283,19 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq):
                     rem = full_shares - shares
                     add1 = max(1, rem // 3)
                     add2 = rem - add1
+                    # 隨加碼上移停損: 加碼後停損升至前一批進場點下方
+                    # 確保滿倉後最大虧損 < 初始單批風險
                     pyramid_adds = [
-                        {"trigger": entry * 1.02, "shares": add1},
-                        {"trigger": entry * 1.04, "shares": add2},
+                        {"trigger": entry * 1.02, "shares": add1,
+                         "new_stop_frac": 0.995},   # 停損升至略低於突破價
+                        {"trigger": entry * 1.04, "shares": add2,
+                         "new_stop_frac": 1.015},   # 停損升至突破價 +1.5%
                     ]
                 open_pos.append({
                     "code": code,
                     "shares": shares,
                     "entry": entry,
+                    "init_entry": entry,   # 用於三週法則，不受加碼均價影響
                     "stop": stop,
                     "init_stop": stop,
                     "target": target,
