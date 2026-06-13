@@ -26,10 +26,6 @@ COMMISSION = 2.5         # 每口每邊手續費 (美元)
 SLIP_TICKS = 1.0         # 每邊滑價 (跳動點數)
 TRADING_DAYS = 252
 
-# 反向通道出場欄位對照
-_CH_LO = {10: "dc_lo10", 20: "dc_lo20"}
-_CH_HI = {10: "dc_hi10", 20: "dc_hi20"}
-
 
 def load_all():
     data = {}
@@ -87,24 +83,28 @@ def _check_exit(p, row, di):
         if l <= p["stop"]:
             return min(o, p["stop"])
         if p["exit_channel"]:
-            lvl = row[_CH_LO[p["exit_channel"]]]
+            lvl = row[f"dc_lo{p['exit_channel']}"]
             if not np.isnan(lvl) and l <= lvl:
                 return min(o, lvl)
         if p["exit_mid"] and not np.isnan(row["ma20"]) and h >= row["ma20"]:
             return max(o, row["ma20"])
-        if p["exit_ma"] and not np.isnan(row["ma100"]) and row["ma50"] < row["ma100"]:
-            return c                                   # 趨勢翻空, 收盤出場
+        if p["exit_ma"]:
+            mf, ms = row[f"ma{p['exit_ma'][0]}"], row[f"ma{p['exit_ma'][1]}"]
+            if not np.isnan(ms) and mf < ms:
+                return c                               # 趨勢翻空, 收盤出場
     else:                                              # 空單
         if h >= p["stop"]:
             return max(o, p["stop"])
         if p["exit_channel"]:
-            lvl = row[_CH_HI[p["exit_channel"]]]
+            lvl = row[f"dc_hi{p['exit_channel']}"]
             if not np.isnan(lvl) and h >= lvl:
                 return max(o, lvl)
         if p["exit_mid"] and not np.isnan(row["ma20"]) and l <= row["ma20"]:
             return min(o, row["ma20"])
-        if p["exit_ma"] and not np.isnan(row["ma100"]) and row["ma50"] > row["ma100"]:
-            return c
+        if p["exit_ma"]:
+            mf, ms = row[f"ma{p['exit_ma'][0]}"], row[f"ma{p['exit_ma'][1]}"]
+            if not np.isnan(ms) and mf > ms:
+                return c
     if di >= p["expire_idx"]:
         return c
     return None
@@ -146,7 +146,7 @@ def _open_position(market, s, di, df, equity):
         "stop": stop, "init_stop": stop,
         "exit_channel": s.get("exit_channel", 0),
         "exit_mid": s.get("exit_mid", False),
-        "exit_ma": s.get("exit_ma", False),
+        "exit_ma": s.get("exit_ma", None),
         "trail_atr": s.get("trail_atr", 0.0), "reverse": s.get("reverse", False),
         "expire_idx": di + s["max_hold"],
         "hi_ext": entry, "init_atr": atr,
@@ -154,10 +154,16 @@ def _open_position(market, s, di, df, equity):
     }
 
 
-def run_strategy(data, entry_map, key, init_eq, all_dates, date_idx):
+def run_strategy(data, entry_map, key, init_eq, all_dates, date_idx,
+                 date_from=None, date_to=None):
+    """date_from/date_to (pd.Timestamp) 限制回測區間, 供樣本內/外驗證。"""
     cash = init_eq
     open_pos = {}        # market -> position
     trades, curve = [], []
+    if date_from is not None or date_to is not None:
+        all_dates = [d for d in all_dates
+                     if (date_from is None or d >= date_from)
+                     and (date_to is None or d <= date_to)]
 
     for d in all_dates:
         # 1. 出場 (持倉中、且非進場當根)
