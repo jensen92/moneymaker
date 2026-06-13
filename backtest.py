@@ -36,9 +36,12 @@ DD_RESUME = {"A": 0.10, "B": 1.00, "C": 1.00, "D": 1.00}
 MAX_POS = {"A": 5, "B": 10, "C": 8, "D": 8}
 
 # 三週法則參數 (策略 D): 突破後 THREE_WEEK_DAYS 日內漲幅 >= THREE_WEEK_GAIN
-# 即視為主升段, 取消 +20% 賣半, 讓強勢股自由奔跑
+# 即視為主升段, 取消 +20% 賣半, 讓強勢股自由奔跑 (各訊號可覆寫 three_week_gain)
 THREE_WEEK_GAIN = 0.20
 THREE_WEEK_DAYS = 15
+
+# 回撤保護暫停後的強制恢復冷卻天數 (交易日). 避免已實現權益凍結造成永久暫停.
+PAUSE_COOLDOWN = 60
 
 
 def load_all():
@@ -125,6 +128,7 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
     equity = init_eq
     peak_eq = init_eq
     paused = False
+    pause_count = 0
     open_pos = []
     trades = []
     curve = []
@@ -160,9 +164,10 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                     risk_per_sh = p["entry"] - p["init_stop"]
                     days_held = di - p["entry_idx"]
                     init_entry = p.get("init_entry", p["entry"])
+                    tw_gain = p.get("three_week_gain", THREE_WEEK_GAIN)
                     # 三週法則: 突破後 N 日內漲 >= G → 跳過賣半, 讓強勢股自由奔跑
                     if not p["three_week_hold"] and days_held <= THREE_WEEK_DAYS:
-                        if row["high"] >= init_entry * (1 + THREE_WEEK_GAIN):
+                        if row["high"] >= init_entry * (1 + tw_gain):
                             p["three_week_hold"] = True
                             # 不改 expire_idx, 只取消 +20% 賣半動作
                     # +20% 賣出一半 (三週法則啟動時跳過)
@@ -211,10 +216,18 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
         peak_eq = max(peak_eq, equity)
         dd = (peak_eq - equity) / peak_eq
 
-        if dd >= dd_pause:
-            paused = True
-        elif dd <= dd_resume:
-            paused = False
+        # 回撤保護: 跌破 dd_pause 暫停新倉. 因權益為「已實現」, 暫停後權益凍結,
+        # 單靠 dd 回到 dd_resume 永遠無法恢復 (吸收態), 故以冷卻天數強制恢復:
+        # 回撤回到 dd_resume 以內 或 暫停滿 PAUSE_COOLDOWN 日即恢復並重設峰值.
+        if not paused:
+            if dd >= dd_pause:
+                paused = True
+                pause_count = 0
+        else:
+            pause_count += 1
+            if dd <= dd_resume or pause_count >= PAUSE_COOLDOWN:
+                paused = False
+                peak_eq = equity   # 重設峰值, 避免恢復後立即再次觸發
 
         # pyramid 加碼 (先於新倉，利用當日行情)
         for p in open_pos:
@@ -317,6 +330,7 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                     "pyramid_adds": pyramid_adds,
                     "half_sold": False,
                     "three_week_hold": False,  # 三週法則旗標
+                    "three_week_gain": s.get("three_week_gain", THREE_WEEK_GAIN),
                     "high_close": entry,
                     "init_atr": atr,
                     "entry_idx": ei,

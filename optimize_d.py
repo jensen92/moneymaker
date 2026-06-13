@@ -49,7 +49,9 @@ def precompute_candidates(data, rs):
 def eval_config(data, cands, risk_on, cfg, dd_pause, three_week_gain,
                 all_dates, date_idx, leverage=1.0):
     """以給定參數組合評估, 回傳全期與近三年的績效字典."""
-    # 套用參數: 訊號過濾
+    # 套用參數: 訊號過濾 (three_week_gain 由訊號字典帶給引擎)
+    cfg = dict(cfg)
+    cfg["three_week_gain"] = three_week_gain
     signals = defaultdict(list)
     for d, code, i, feat in cands:
         if d not in risk_on:
@@ -63,7 +65,6 @@ def eval_config(data, cands, risk_on, cfg, dd_pause, three_week_gain,
     # 設定引擎旁路參數
     bt.DD_PAUSE["D"] = dd_pause
     bt.DD_RESUME["D"] = max(0.0, dd_pause - 0.08) if dd_pause < 1.0 else 1.0
-    bt.THREE_WEEK_GAIN = three_week_gain
 
     trades, curve = run_sub(data, entry_map, "D", leverage, INIT_EQ,
                             all_dates=all_dates, date_idx=date_idx)

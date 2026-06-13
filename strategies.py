@@ -135,14 +135,18 @@ def signal_c(df, i, rs_rank=None):
     return None
 
 
-# 策略 D 進場參數 (可由優化腳本覆寫做參數掃描)
+# 策略 D 進場參數 (optimize_d.py 全期 54 組掃描最佳 MAR 組合)
+#   舊 D v4: rs 0.80 / stop 0.07 / tw 0.20 → +550% 但 MaxDD 29% (MAR~0.46)
+#   優化後 : rs 0.85 / stop 0.08 / tw 0.25 → +509% 且 MaxDD 20% (MAR 0.62)
+#   關鍵: 較寬 8% 停損避免強勢突破被洗、RS 提高到 85 提升突破品質
 D_CONFIG = {
-    "rs_min":       0.80,   # RS 百分位門檻
-    "stop_pct":     0.07,   # 初始停損
-    "gain_cap":     0.10,   # 突破日漲幅上限 (不追高)
-    "contraction":  0.80,   # ATR5/ATR14 收縮門檻 (越小越嚴)
-    "vol_mult":     1.5,    # 突破日量 / 50日均量 門檻
-    "max_hold":     90,
+    "rs_min":          0.85,  # RS 百分位門檻
+    "stop_pct":        0.08,  # 初始停損 (寬停損反而少被洗出)
+    "gain_cap":        0.10,  # 突破日漲幅上限 (不追高)
+    "contraction":     0.80,  # ATR5/ATR14 收縮門檻 (越小越嚴)
+    "vol_mult":        1.5,   # 突破日量 / 50日均量 門檻
+    "three_week_gain": 0.25,  # 三週法則: N日內漲幅 >= 此值即讓利潤奔跑
+    "max_hold":        90,
 }
 
 
@@ -196,10 +200,11 @@ def _d_signal(feat, cfg):
             and feat["gain"] <= cfg["gain_cap"]):
         return None
     return {
-        "score":     feat["rank"],
-        "minervini": True,
-        "stop_pct":  cfg["stop_pct"],
-        "max_hold":  cfg["max_hold"],
+        "score":           feat["rank"],
+        "minervini":       True,
+        "stop_pct":        cfg["stop_pct"],
+        "three_week_gain": cfg["three_week_gain"],
+        "max_hold":        cfg["max_hold"],
     }
 
 
