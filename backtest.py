@@ -28,11 +28,11 @@ ALLOC = 0.5          # 每策略分配比例 (各 100 萬)
 RISK_PCT = 0.01      # 單筆風險
 PICKS_PER_DAY = 2    # 每子帳戶每日最多新倉
 # 各策略回撤保護閾值 (B 波動大,靠停損與部位控制,不設 pause 上限)
-DD_PAUSE  = {"C": 1.00, "D": 1.00}
-DD_RESUME = {"C": 1.00, "D": 1.00}
+DD_PAUSE  = {"A": 1.00, "C": 1.00, "D": 1.00}
+DD_RESUME = {"A": 1.00, "C": 1.00, "D": 1.00}
 
 # 各策略最大同時持倉 (持有期越長需要越多槽)
-MAX_POS = {"C": 8, "D": 8}
+MAX_POS = {"A": 8, "C": 8, "D": 8}
 
 # 三週法則參數 (策略 D): 突破後 THREE_WEEK_DAYS 日內漲幅 >= THREE_WEEK_GAIN
 # 即視為主升段, 取消 +20% 賣半, 讓強勢股自由奔跑 (各訊號可覆寫 three_week_gain)
@@ -76,9 +76,9 @@ def compute_rs_rank(data):
 def collect_signals(data, strategy_key):
     sig_fn = STRATEGIES[strategy_key]
     signals = defaultdict(list)
-    needs_rs = strategy_key in ("C", "D")
+    needs_rs = strategy_key in ("A", "C", "D")
     rs = compute_rs_rank(data) if needs_rs else None
-    min_i = 210 if needs_rs else 120  # C/D 需要 MA200
+    min_i = 210 if needs_rs else 120  # A/C/D 需要 MA200
     for code, df in data.items():
         for i in range(min_i, len(df) - 1):
             if needs_rs:
@@ -415,7 +415,7 @@ def report(trades, combined, curves, leverage):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--leverage", type=float, default=2.0)
-    ap.add_argument("--strategies", default="C,D",
+    ap.add_argument("--strategies", default="A,C,D",
                     help="逗號分隔, 例如 A,B,C")
     ap.add_argument("--data-dir", default=None,
                     help="覆寫資料目錄 (例如 data_adj)")

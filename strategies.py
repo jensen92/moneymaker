@@ -1,5 +1,6 @@
-"""台股飆股篩選策略 (C / D).
+"""台股飆股篩選策略 (A / C / D).
 
+策略 A: Minervini SEPA 完整版 — 五模組 (趨勢模板+VCP+MVP+負面排除), RS≥70.
 策略 C: Minervini 第二階段趨勢模板 + 波動收縮突破, RS≥70, 停損 8%.
 策略 D: 同 C 但 RS≥85, 停損 8%, 三週法則 (強勢股不賣半).
 """
@@ -30,6 +31,188 @@ def add_indicators(df):
     df["high20"] = df["high"].rolling(20).max()
     return df
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 策略 A 輔助函式
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _detect_vcp(df, i, min_t=2, max_t=6, w=4):
+    """VCP 波動收縮型態: 找出 min_t ~ max_t 次遞縮回檔 + 右側量縮.
+
+    每次 peak→trough 回撤幅度需比前一次小 (整體末 < 首 × 0.70),
+    且最後一次收縮幅度 < 15%; 近 8 根平均量需低於 50 日均量 85%.
+    回傳 (is_vcp: bool, n_contractions: int).
+    """
+    lb = min(70, i - 2)
+    s  = i - lb
+    hi  = df["high"].values[s:i + 1]
+    lo  = df["low"].values[s:i + 1]
+    vol = df["volume"].values[s:i + 1]
+    vm  = df["vol_ma50"].values[s:i + 1]
+    n   = len(hi)
+    if n < 20:
+        return False, 0
+
+    # 局部極值 (window = w bars)
+    peaks   = [j for j in range(w, n - w) if hi[j] == hi[j - w:j + w + 1].max()]
+    troughs = [j for j in range(w, n - w) if lo[j] == lo[j - w:j + w + 1].min()]
+    if len(peaks) < 2 or len(troughs) < 2:
+        return False, 0
+
+    # 按時間排列, 依序找 peak→trough 對
+    events = [(j, "P", hi[j]) for j in peaks] + [(j, "T", lo[j]) for j in troughs]
+    events.sort()
+    swings, last_pk = [], None
+    for j, t, v in events:
+        if t == "P":
+            last_pk = (j, v)
+        elif t == "T" and last_pk is not None:
+            pct = (last_pk[1] - v) / last_pk[1]
+            if 0.03 <= pct <= 0.65:      # 有效回撤: 3% ~ 65%
+                swings.append(pct)
+            last_pk = None               # 下一輪需新高點
+
+    if len(swings) < min_t:
+        return False, 0
+
+    sw = swings[-max_t:]                 # 取最近 max_t 次收縮
+    # 整體遞縮: 最後一次 < 第一次 × 0.70, 且末次 < 15% (緊縮到位)
+    contracting = sw[-1] < sw[0] * 0.70 and sw[-1] < 0.15
+    # 右側量縮: 近 8 根均量 < 50 日均量 × 0.85
+    valid_vm = vm[-8:][np.isfinite(vm[-8:])]
+    vol_dryup = (len(valid_vm) >= 4
+                 and np.mean(vol[-8:]) < 0.85 * np.mean(valid_vm))
+    return contracting and vol_dryup, len(sw)
+
+
+def signal_a(df, i, rs_rank=None):
+    """Minervini SEPA 完整版 (策略 A) — 五模組全部實作.
+
+    模組一  趨勢模板 (8 條件):
+      1/8. close > MA150, MA200, MA50
+      2.   MA150 > MA200
+      3.   MA200 上揚 >= 21 交易日
+      4.   MA50 > MA150 > MA200
+      5.   close >= 52 週低點 × 1.25
+      6.   close >= 52 週高點 × 0.75
+      7a.  RS rank >= 70
+      7b.  RS 線上升趨勢 >= 6 週 (以 ret126 近 30 日斜率近似)
+      8.   close > MA50
+
+    模組二  基本面 (因無財報資料, 本版略過 EPS/Revenue/ROE 篩選).
+
+    模組三  VCP 波動收縮型態:
+      - 2 ~ 6 次遞縮回檔 (每次約為前次一半)
+      - 右側量縮 (最後一次收縮量低於 50 日均量)
+
+    模組四  進場觸發與 MVP 動能 (OR 關係, 任一成立即進場):
+      - 突破觸發: 收盤突破 20 日高點 + 當日量 > 1.5× MA50量
+      - MVP 指標: 近 15 日 ≥12 天上漲 + 量增 25% + 漲幅 ≥20%
+
+    模組五  負面排除 (先行篩除, 任一命中即放棄):
+      - close < MA200 (第四階段衰退)
+      - 從 52 週高點回撤 > 50%
+      - 近 40 根內出現 ≥2 次向下跳空 (>2%)
+      - 近 60 根內成交量最大一日為顯著長黑 (收 < 開 -1.5%)
+
+    出場 (與策略 C 相同, 由引擎執行):
+      MA50 跌破全出 / +20% 賣半 / 3R 保本移停 / 最長 90 日
+    """
+    row  = df.iloc[i]
+    prev = df.iloc[i - 1]
+
+    # 最低流動性門檻
+    if row["close"] < 10 or row["volume"] * row["close"] < 50_000_000:
+        return None
+    if np.isnan(row["ma200"]) or np.isnan(row["low252"]):
+        return None
+
+    # ═══ 模組五: 負面排除 (優先執行) ═════════════════════════════════════
+    # 5-1 跌破 MA200 → 可能進入第四階段
+    if row["close"] < row["ma200"]:
+        return None
+    # 5-2 從 52 週高點回撤 > 50% → 基本面可能惡化、上方套牢壓力大
+    if row["close"] < row["high252"] * 0.50:
+        return None
+    # 5-3 近 40 根出現 ≥2 次向下跳空 (>2%) → 連續下跳代表機構出貨
+    gap_downs = sum(
+        1 for k in range(max(1, i - 39), i + 1)
+        if df["open"].iloc[k] < df["close"].iloc[k - 1] * 0.98
+    )
+    if gap_downs >= 2:
+        return None
+    # 5-4 近 60 根內量最大一日為長黑 (收 < 開 -1.5%) → 機構出貨訊號
+    sub60 = df.iloc[max(0, i - 59):i + 1]
+    mvr = df.iloc[sub60["volume"].idxmax()]
+    if mvr["close"] < mvr["open"] * 0.985:
+        return None
+
+    # ═══ 模組一: 趨勢模板 (8 條件) ═══════════════════════════════════════
+    # 條件 1/8: close > MA150, MA200, MA50
+    if not (row["close"] > row["ma150"]
+            and row["close"] > row["ma200"]
+            and row["close"] > row["ma50"]):
+        return None
+    # 條件 2: MA150 > MA200
+    if row["ma150"] <= row["ma200"]:
+        return None
+    # 條件 3: MA200 上揚 >= 21 交易日 (最好 84~105 日)
+    if row["ma200"] <= df["ma200"].iloc[i - 21]:
+        return None
+    # 條件 4: MA50 > MA150 (> MA200 已由條件 2 推導)
+    if row["ma50"] <= row["ma150"]:
+        return None
+    # 條件 5: close >= 52 週低點 × 1.25 (脫離底部至少 25%)
+    if row["close"] < row["low252"] * 1.25:
+        return None
+    # 條件 6: close >= 52 週高點 × 0.75 (位於年高附近)
+    if row["close"] < row["high252"] * 0.75:
+        return None
+    # 條件 7a: RS rank >= 70
+    if rs_rank is None or rs_rank < 0.70:
+        return None
+    # 條件 7b: RS 線上升趨勢 >= 6 週 (≈30 交易日)
+    #   以 ret126 近 30 日是否上升近似 (ret126 提升 → 相對強度改善)
+    if i < 30 or df["ret126"].iloc[i] <= df["ret126"].iloc[i - 30]:
+        return None
+
+    # ═══ 模組三: VCP 波動收縮型態 ════════════════════════════════════════
+    vcp_ok, n_t = _detect_vcp(df, i)
+    if not vcp_ok:
+        return None
+
+    # ═══ 模組四: 進場觸發與 MVP 動能 (OR) ═══════════════════════════════
+    # 4-1 突破觸發: 收盤突破 20 日高點 + 當日量 > 1.5× MA50量
+    prior_high20 = df["high"].iloc[i - 20:i].max()
+    breakout = (row["close"] > prior_high20
+                and row["volume"] > 1.5 * row["vol_ma50"])
+
+    # 4-2 MVP 動能 (David Ryan):
+    #   近 15 日 ≥12 天收漲 (Momentum)
+    #   + 20 日均量相較 15 日前增加 25% (Volume)
+    #   + 近 15 日漲幅 ≥20% (Price)
+    mvp = False
+    if i >= 15:
+        up_days = sum(
+            1 for k in range(i - 14, i + 1)
+            if df["close"].iloc[k] > df["close"].iloc[k - 1]
+        )
+        vol_surge15 = (not np.isnan(df["vol_ma20"].iloc[i - 15])
+                       and row["vol_ma20"] > df["vol_ma20"].iloc[i - 15] * 1.25)
+        ret15 = row["close"] / df["close"].iloc[i - 15] - 1.0
+        mvp = up_days >= 12 and vol_surge15 and ret15 >= 0.20
+
+    if not (breakout or mvp):
+        return None
+
+    return {
+        "score":           rs_rank,
+        "minervini":       True,
+        "stop_pct":        0.08,
+        "three_week_gain": 0.20,
+        "max_hold":        90,
+    }
 
 
 def signal_c(df, i, rs_rank=None):
@@ -172,4 +355,4 @@ def signal_d(df, i, rs_rank=None):
 
 
 
-STRATEGIES = {"C": signal_c, "D": signal_d}
+STRATEGIES = {"A": signal_a, "C": signal_c, "D": signal_d}

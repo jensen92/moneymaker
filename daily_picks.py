@@ -31,7 +31,7 @@ def main():
     rs = compute_rs_rank(all_data)
     risk_on = load_regime()
 
-    candidates = {"C": [], "D": []}
+    candidates = {"A": [], "C": [], "D": []}
     latest_date = None
 
     for code, df in all_data.items():
@@ -54,7 +54,7 @@ def main():
     if not regime_ok:
         return
 
-    for key in ("C", "D"):
+    for key in ("A", "C", "D"):
         print(f"\n=== 策略 {key} 明日進場候選 (取前 {PICKS_PER_DAY}) ===")
         picks = sorted(candidates[key], reverse=True)[:PICKS_PER_DAY]
         if not picks:
