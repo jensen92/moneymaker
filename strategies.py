@@ -259,56 +259,28 @@ def signal_a(df, i, rs_rank=None):
     return _a_signal(_a_features(df, i, rs_rank), A_CONFIG)
 
 
+# 策略 C 進場參數 (與 D 共用 _d_features/_d_signal, 僅 config 不同)
+#   C = 較寬鬆版 D: RS 門檻低 (0.70)、不限突破日漲幅 (gain_cap 放大)、
+#   三週法則用引擎預設 0.20、最長持有 90 日. 與原手寫 signal_c 完全等價.
+C_CONFIG = {
+    "rs_min":          0.70,  # RS 百分位門檻 (較 D 寬)
+    "stop_pct":        0.08,  # 初始停損
+    "gain_cap":        9.99,  # 不限突破日漲幅 (原 C 無此過濾)
+    "contraction":     0.80,  # ATR5/ATR14 收縮門檻
+    "vol_mult":        1.5,   # 突破日量 / 50日均量 門檻
+    "three_week_gain": 0.20,  # 三週法則 (沿用引擎預設值)
+    "max_hold":        90,
+}
+
+
 def signal_c(df, i, rs_rank=None):
     """Minervini 第二階段趨勢模板 + 波動收縮突破 (策略 C).
 
-    模板 (8 條件, P/E 與 RS 線以可得資料近似):
-      1/8. close > MA150, MA200, MA50
-      2.   MA150 > MA200
-      3.   MA200 上揚 >= 1 個月 (21 交易日)
-      4.   MA50 > MA150 > MA200
-      5.   close >= 52 週低點 * 1.25
-      6.   close >= 52 週高點 * 0.75
-      7.   RS rank >= 70 (126 日報酬全市場百分位, 由回測引擎預先計算)
-    觸發: 波動收縮 (ATR5 < 0.75*ATR14) + 樞軸日量縮 (< MA50量)
-          次日突破 20 日高點 + 放量 (>1.5x MA50量) -- 以收盤突破近似
-    出場 (引擎特殊處理):
-      - 初始停損 8% (上限 10%)
-      - 獲利達 3R 停損上移至成本價
-      - MA50 上穿成本價後改用 MA50 移動停損
-      - +20% 賣出一半
-      - 收盤跌破 MA50 全部出場; 最長持有 90 日
+    與策略 D 共用 _d_features (模板+量價特徵) 與 _d_signal (門檻判定),
+    差別僅在 C_CONFIG (RS 較寬、不限突破漲幅). 出場由引擎處理:
+    初始停損 8% / 3R 保本 / MA50 移動停損 / +20% 賣半 / 跌破 MA50 全出 / 最長 90 日.
     """
-    row = df.iloc[i]
-    if np.isnan(row["ma200"]) or np.isnan(row["low252"]) or row["close"] < 10:
-        return None
-    if row["volume"] * row["close"] < 50_000_000:
-        return None
-    template = (
-        row["close"] > row["ma150"] and row["close"] > row["ma200"]
-        and row["ma150"] > row["ma200"]
-        and row["ma200"] > df["ma200"].iloc[i - 21]          # 條件 3
-        and row["ma50"] > row["ma150"]                        # 條件 4
-        and row["close"] > row["ma50"]                        # 條件 8
-        and row["close"] >= row["low252"] * 1.25              # 條件 5
-        and row["close"] >= row["high252"] * 0.75             # 條件 6
-    )
-    if not template:
-        return None
-    if rs_rank is not None and rs_rank < 0.70:                # 條件 7
-        return None
-    # 波動收縮與量縮看突破前一日 (突破日本身必然放量)
-    prev = df.iloc[i - 1]
-    contraction = prev["atr5"] < 0.80 * prev["atr14"]
-    vol_dryup = prev["volume"] < prev["vol_ma50"]
-    prior_high20 = df["high"].iloc[i - 20:i].max()
-    breakout = (row["close"] > prior_high20
-                and row["volume"] > 1.5 * row["vol_ma50"])
-    if contraction and vol_dryup and breakout:
-        stop_pct = 0.08
-        return {"score": rs_rank if rs_rank is not None else row["ret126"],
-                "minervini": True, "stop_pct": stop_pct, "max_hold": 90}
-    return None
+    return _d_signal(_d_features(df, i, rs_rank), C_CONFIG)
 
 
 # 策略 D 進場參數 (optimize_d.py 核心 + optimize_d2.py 深度掃描進場品質)
@@ -376,13 +348,16 @@ def _d_signal(feat, cfg):
             and feat["vol_surge"] > cfg["vol_mult"]
             and feat["gain"] <= cfg["gain_cap"]):
         return None
-    return {
+    sig = {
         "score":           feat["rank"],
         "minervini":       True,
         "stop_pct":        cfg["stop_pct"],
         "three_week_gain": cfg["three_week_gain"],
         "max_hold":        cfg["max_hold"],
     }
+    if cfg.get("pyramid"):                 # 漸進式曝險: 起始 1/4 倉, 順勢加碼
+        sig["pyramid"] = True
+    return sig
 
 
 def signal_d(df, i, rs_rank=None):

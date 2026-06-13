@@ -5,6 +5,7 @@ sweep_*.csv
 optimize_d_results.csv
 optimize_a_results.csv
 optimize_d2_results.csv
+optimize_cd_results.csv
 __pycache__/
 data_adj/
 picks_c_monthly.csv
