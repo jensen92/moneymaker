@@ -1,6 +1,9 @@
 data/
+futures_data/
 trades_*.csv
 equity_*.csv
+futures_trades.csv
+futures_equity.csv
 sweep_*.csv
 optimize_d_results.csv
 optimize_a_results.csv
