@@ -155,8 +155,11 @@ def _open_position(market, s, di, df, equity):
 
 
 def run_strategy(data, entry_map, key, init_eq, all_dates, date_idx,
-                 date_from=None, date_to=None):
-    """date_from/date_to (pd.Timestamp) 限制回測區間, 供樣本內/外驗證。"""
+                 date_from=None, date_to=None, return_open=False):
+    """date_from/date_to (pd.Timestamp) 限制回測區間, 供樣本內/外驗證。
+
+    return_open=True 時額外回傳結束時仍持有的部位 (market -> position),
+    供 futures_positions.py 檢視目前持倉狀態。"""
     cash = init_eq
     open_pos = {}        # market -> position
     trades, curve = [], []
@@ -213,6 +216,8 @@ def run_strategy(data, entry_map, key, init_eq, all_dates, date_idx,
 
         curve.append({"date": d, "equity": equity})
 
+    if return_open:
+        return trades, pd.DataFrame(curve), open_pos
     return trades, pd.DataFrame(curve)
 
 
