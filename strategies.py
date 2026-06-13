@@ -260,12 +260,15 @@ def signal_a(df, i, rs_rank=None):
 
 
 # 策略 C 進場參數 (與 D 共用 _d_features/_d_signal, 僅 config 不同)
-#   C = 較寬鬆版 D: RS 門檻低 (0.70)、不限突破日漲幅 (gain_cap 放大)、
-#   三週法則用引擎預設 0.20、最長持有 90 日. 與原手寫 signal_c 完全等價.
+#   C = 較寬鬆版 D: 不限突破日漲幅 (gain_cap 放大)、三週法則用引擎預設 0.20.
+#   optimize_cd.py 成長掃描 (首次正式優化):
+#     舊 C (rs0.70/stop0.08): CAGR 10.2% / DD 24.5% / MAR 0.41 / PF 1.51
+#     優化後 (rs0.80/stop0.10): CAGR 10.8% / DD 14.5% / MAR 0.75 / PF 1.78
+#     關鍵: RS 提到 0.80 提升品質、停損放寬到 10% 少被洗 → 報酬略增而回撤近乎砍半.
 C_CONFIG = {
-    "rs_min":          0.70,  # RS 百分位門檻 (較 D 寬)
-    "stop_pct":        0.08,  # 初始停損
-    "gain_cap":        9.99,  # 不限突破日漲幅 (原 C 無此過濾)
+    "rs_min":          0.80,  # RS 百分位門檻 (掃描最佳, 較舊版 0.70 嚴)
+    "stop_pct":        0.10,  # 初始停損 (放寬到 10%, 少被洗出)
+    "gain_cap":        9.99,  # 不限突破日漲幅 (C 的特色, 與 D 區隔)
     "contraction":     0.80,  # ATR5/ATR14 收縮門檻
     "vol_mult":        1.5,   # 突破日量 / 50日均量 門檻
     "three_week_gain": 0.20,  # 三週法則 (沿用引擎預設值)
