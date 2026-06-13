@@ -96,8 +96,8 @@ def _detect_vcp(df, i, cfg):
     if mean_all <= 0 or mean_last10 / mean_all > cfg["vcp_dryup"]:
         return False, 0, None
 
-    # 通過: pivot = 近 20 根最高價
-    pivot = float(np.nanmax(hi[-20:]))
+    # 通過: pivot = 近 20 根最高價 (不含當根, 避免 close <= high[i] 永遠無法突破)
+    pivot = float(np.nanmax(hi[-21:-1]) if len(hi) >= 21 else np.nanmax(hi[:-1]))
     return True, len(sw), pivot
 
 
@@ -114,7 +114,7 @@ A_CONFIG = {
     "vcp_T_max":           6,      # 最多收縮次數 T
     "vcp_last_max":        0.10,   # 末段收縮上限 10%（理想 < 5%）
     "vcp_depth_max":       0.35,   # 整體最深回撤上限 35%
-    "vcp_dryup":           0.70,   # 末段均量 / 整段均量 上限
+    "vcp_dryup":           0.85,   # 末段均量 / 整段均量 上限 (台股流動性較低, 0.85 合理)
     "vcp_window":          4,      # swing point 判斷窗口
     # L6 進場
     "breakout_vol_x":      1.5,    # 突破放量倍數
@@ -164,12 +164,12 @@ def signal_a(df, i, rs_rank=None):
     # 從 52 週高點回撤 > 50% → 基本面惡化、上方套牢壓力大
     if row["close"] < row["high252"] * 0.50:
         return None
-    # 近 40 根內向下跳空 (>2%) 次數 >= 2 → 連續下跳 = 機構出貨訊號
+    # 近 40 根內向下跳空 (>3%) 次數 >= 3 → 台股小跳空常見, 提高門檻才算連續出貨
     gap_downs = sum(
         1 for k in range(max(1, i - 39), i + 1)
-        if df["open"].iloc[k] < df["close"].iloc[k - 1] * 0.98
+        if df["open"].iloc[k] < df["close"].iloc[k - 1] * 0.97
     )
-    if gap_downs >= 2:
+    if gap_downs >= 3:
         return None
     # 近 60 根內成交量最大的一天是長黑 (收 < 開 * 0.985) → 機構出貨
     sub60 = df.iloc[max(0, i - 59):i + 1]
