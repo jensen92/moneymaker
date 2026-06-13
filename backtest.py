@@ -4,10 +4,16 @@
 進場: 訊號日次日開盤價. 出場: 停損/停利或時間出場.
 
 部位控制 (各子帳戶):
-  - 單筆風險 = 當日子帳戶權益 × RISK_PCT
+  - 單筆風險 = 當日子帳戶權益 × RISK_PCT × 制度調節因子
   - 名目曝險上限 = 子帳戶權益 × 槓桿
   - 策略 C/D: 最大 8 檔同時持倉, 每日最多 2 檔新倉
   - 回撤保護: 子帳戶從峰值回撤 > DD_PAUSE 時暫停, 縮回 DD_RESUME 以內恢復
+
+上線交易強化 (live-ready):
+  1. 漲停/跌停填單模擬: 進場日漲停 → 跳過; 停損日跌停 → 延至次日開盤
+  2. 回撤熔斷: 子帳戶 DD > DD_PAUSE 暫停新倉 (預設 20%)
+  3. 三段式市況調節: TAIEX vs MA20/MA60 → 強勢/盤整/防禦三級
+  4. 波動目標化: TAIEX 20日實現波動率高時自動縮小 RISK_PCT
 """
 import argparse
 import json
@@ -28,8 +34,10 @@ ALLOC = 0.5          # 每策略分配比例 (各 100 萬)
 RISK_PCT = 0.01      # 單筆風險
 PICKS_PER_DAY = 2    # 每子帳戶每日最多新倉
 # 各策略回撤保護閾值 (B 波動大,靠停損與部位控制,不設 pause 上限)
-DD_PAUSE  = {"A": 1.00, "C": 1.00, "D": 1.00}
-DD_RESUME = {"A": 1.00, "C": 1.00, "D": 1.00}
+# 回撤熔斷: DD_PAUSE 為暫停閾值, DD_RESUME 為恢復閾值
+# 1.00 = 停用; 上線建議 0.20/0.15 (C/D 波動較小)
+DD_PAUSE  = {"A": 0.20, "C": 0.20, "D": 0.20}
+DD_RESUME = {"A": 0.12, "C": 0.12, "D": 0.12}
 
 # 各策略最大同時持倉 (持有期越長需要越多槽)
 MAX_POS = {"A": 8, "C": 8, "D": 8}
@@ -41,6 +49,15 @@ THREE_WEEK_DAYS = 15
 
 # 回撤保護暫停後的強制恢復冷卻天數 (交易日). 避免已實現權益凍結造成永久暫停.
 PAUSE_COOLDOWN = 60
+
+# 三段式市況調節: TAIEX vs MA20/MA60 → 各階段 RISK_PCT 乘數
+REGIME_RISK_MULT = {2: 1.0, 1: 0.6, 0: 0.0}   # 強勢/盤整/防禦
+# 波動目標化: TAIEX 20日年化波動率的「基準值」; 超過時縮小 RISK_PCT
+VOL_TARGET = 0.15   # 15% 年化波動 = 1× ; 30% → 0.5×
+VOL_CAP    = 2.0    # vol scalar 上限 (極低波動時最多放大一倍)
+
+# 漲跌停判定門檻: 日振幅 / 開盤價 < 此值視為限制板
+LIMIT_RANGE_THRESH = 0.005
 
 
 def load_all():
@@ -64,6 +81,49 @@ def load_regime():
     df = pd.read_csv(os.path.join(DATA_DIR, "_TWII.csv"), parse_dates=["date"])
     df["ma60"] = df["close"].rolling(60).mean()
     return set(df.loc[df["close"] > df["ma60"], "date"])
+
+
+def load_regime_tiers():
+    """三段式市況分級: 2=強勢(TAIEX>MA20>MA60), 1=盤整, 0=防禦(TAIEX<MA60且MA60下彎).
+
+    回傳 {date: tier} dict 供 run_sub 動態調整 RISK_PCT 與開倉限制.
+    """
+    df = pd.read_csv(os.path.join(DATA_DIR, "_TWII.csv"), parse_dates=["date"])
+    df["ma20"] = df["close"].rolling(20).mean()
+    df["ma60"] = df["close"].rolling(60).mean()
+    df["ma60_5d_ago"] = df["ma60"].shift(5)
+    tiers = {}
+    for row in df.itertuples():
+        if pd.isna(row.ma20) or pd.isna(row.ma60):
+            tiers[row.date] = 2   # 資料不足期預設正常
+            continue
+        if row.close > row.ma20 and row.ma20 > row.ma60:
+            tiers[row.date] = 2   # 強勢
+        elif row.close < row.ma60 and (pd.isna(row.ma60_5d_ago)
+                                        or row.ma60 < row.ma60_5d_ago):
+            tiers[row.date] = 0   # 防禦
+        else:
+            tiers[row.date] = 1   # 盤整/過渡
+    return tiers
+
+
+def load_vol_scalars():
+    """波動目標化: 每日波動標量 = VOL_TARGET / 當日20日年化波動率, 夾在 [0.5, VOL_CAP].
+
+    實現波動率 = 20日日報酬標準差 × √244 (年化).
+    波動高時縮小 RISK_PCT, 避免高波動期過度下注.
+    """
+    df = pd.read_csv(os.path.join(DATA_DIR, "_TWII.csv"), parse_dates=["date"])
+    df["ret"] = df["close"].pct_change()
+    df["vol20"] = df["ret"].rolling(20).std() * (244 ** 0.5)
+    scalars = {}
+    for row in df.itertuples():
+        if pd.isna(row.vol20) or row.vol20 <= 0:
+            scalars[row.date] = 1.0
+        else:
+            s = VOL_TARGET / row.vol20
+            scalars[row.date] = max(0.5, min(VOL_CAP, s))
+    return scalars
 
 
 def compute_rs_rank(data):
@@ -146,11 +206,22 @@ def _climax_run(df, di, p):
     return climax or extended
 
 
+def _is_limit_day(df, di):
+    """日振幅 < LIMIT_RANGE_THRESH 視為漲停或跌停封板 (台灣 ±10%)."""
+    row = df.iloc[di]
+    if row["open"] <= 0:
+        return False
+    return (row["high"] - row["low"]) / row["open"] < LIMIT_RANGE_THRESH
+
+
 def run_sub(data, entry_map, strategy_key, leverage, init_eq,
-            all_dates=None, date_idx=None):
+            all_dates=None, date_idx=None,
+            regime_tiers=None, vol_scalars=None):
     """單一策略子帳戶回測.
 
     all_dates / date_idx 可預先以 build_date_index 算好傳入 (參數掃描加速).
+    regime_tiers  : {date: 0/1/2} 三段式市況; None = 停用 (全部視為 tier 2)
+    vol_scalars   : {date: float} 波動標量; None = 停用 (全部 1.0)
     """
     max_pos = MAX_POS[strategy_key]
     dd_pause = DD_PAUSE[strategy_key]
@@ -166,7 +237,13 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
         all_dates, date_idx = build_date_index(data)
 
     for d in all_dates:
-        # 出場
+        # 三段式市況 + 波動標量 → 有效 RISK_PCT
+        tier = regime_tiers.get(d, 2) if regime_tiers else 2
+        vsca = vol_scalars.get(d, 1.0) if vol_scalars else 1.0
+        tier_mult = REGIME_RISK_MULT[tier]
+        eff_risk = RISK_PCT * tier_mult * vsca
+
+        # 出場 (含跌停延遲)
         still_open = []
         for p in open_pos:
             di = date_idx[p["code"]].get(d)
@@ -174,8 +251,22 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                 still_open.append(p)
                 continue
             row = data[p["code"]].iloc[di]
+            df_stock = data[p["code"]]
             exit_price = None
-            if row["low"] <= p["stop"]:
+
+            # 跌停封板: 停損觸及但無法賣出 → 延至次日開盤
+            stop_triggered = row["low"] <= p["stop"]
+            if stop_triggered and _is_limit_day(df_stock, di) and row["close"] < row["open"]:
+                # 跌停, 明日開盤再出場 (expire_idx 往後一天保留部位)
+                p["expire_idx"] = max(p["expire_idx"], di + 1)
+                p["stop"] = p["stop"]   # 停損價不變, 次日用 open
+                # 若已是最後一個交易日則強制以今日收盤出
+                if di + 1 >= len(df_stock):
+                    exit_price = row["close"]
+                else:
+                    still_open.append(p)
+                    continue
+            elif stop_triggered:
                 exit_price = min(p["stop"], row["open"])
             elif p["target"] is not None and row["high"] >= p["target"]:
                 exit_price = row["open"] if row["open"] >= p["target"] else p["target"]
@@ -289,8 +380,8 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
             for a in done:
                 p["pyramid_adds"].remove(a)
 
-        # 新倉
-        if not paused:
+        # 新倉 (tier 0 防禦模式完全停止新倉)
+        if not paused and tier > 0 and eff_risk > 0:
             held = {p["code"] for p in open_pos}
             exposure = sum(p["shares"] * p["entry"] for p in open_pos)
             candidates = sorted(entry_map.get(d, []), reverse=True)
@@ -301,6 +392,11 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                 if code in held:
                     continue
                 df = data[code]
+                # 漲停封板: 進場日振幅極小且收盤 > 前日收盤 → 無法以合理價格買入
+                if _is_limit_day(df, ei):
+                    prev_close = df["close"].iloc[ei - 1] if ei > 0 else df["open"].iloc[ei]
+                    if df["close"].iloc[ei] > prev_close * 1.08:
+                        continue
                 entry = df["open"].iloc[ei] * (1 + SLIP)
                 atr = df["atr14"].iloc[ei - 1]
                 if np.isnan(atr) or atr <= 0:
@@ -312,7 +408,7 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                 if stop <= 0 or entry <= stop:
                     continue
                 risk_per_sh = entry - stop
-                risk_amt = equity * RISK_PCT
+                risk_amt = equity * eff_risk
                 # pyramid: 計算全倉後初始只建 25%
                 full_shares = int(risk_amt / risk_per_sh / 1000) * 1000
                 if full_shares <= 0:
@@ -380,13 +476,16 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                 taken += 1
 
         curve.append({"date": d, "equity": equity, "drawdown": dd,
-                      "paused": paused, "n_pos": len(open_pos)})
+                      "paused": paused, "n_pos": len(open_pos),
+                      "regime_tier": tier, "vol_scalar": round(vsca, 3)})
 
     return trades, pd.DataFrame(curve)
 
 
 def run(data, names, leverage=2.0, strategies=("A", "B")):
     risk_on = load_regime()
+    regime_tiers = load_regime_tiers()
+    vol_scalars  = load_vol_scalars()
     init_eq = INIT_CAPITAL / len(strategies)
 
     all_trades = []
@@ -396,7 +495,8 @@ def run(data, names, leverage=2.0, strategies=("A", "B")):
         sigs = collect_signals(data, k)
         sigs = {d: lst for d, lst in sigs.items() if d in risk_on}
         entry_map = build_entry_map(sigs, data)
-        trades, curve = run_sub(data, entry_map, k, leverage, init_eq)
+        trades, curve = run_sub(data, entry_map, k, leverage, init_eq,
+                                regime_tiers=regime_tiers, vol_scalars=vol_scalars)
         all_trades.extend(trades)
         curves[k] = curve
 
@@ -446,6 +546,19 @@ def report(trades, combined, curves, leverage):
             win = avg_r = pf = 0
         print(f"  {k:<4} {len(stdf):>5} {win:>6.1%} {avg_r:>6.2f} {pf:>8.2f} "
               f"{sub_ret:>7.1%} {sub_cagr:>7.1%} {sub_dd:>8.1%} {sub_pause:>6}")
+
+    # 市況分級統計 (從第一個子帳曲線取)
+    first_curve = next(iter(curves.values()))
+    if "regime_tier" in first_curve.columns:
+        combined = combined.merge(
+            first_curve[["date", "regime_tier"]].drop_duplicates("date"), on="date", how="left")
+    if "regime_tier" in combined.columns:
+        tier_days = combined["regime_tier"].value_counts().sort_index()
+        total = len(combined)
+        print(f"\n市況分級 (交易日):  "
+              f"強勢={tier_days.get(2,0)} ({tier_days.get(2,0)/total:.0%})  "
+              f"盤整={tier_days.get(1,0)} ({tier_days.get(1,0)/total:.0%})  "
+              f"防禦={tier_days.get(0,0)} ({tier_days.get(0,0)/total:.0%})")
 
     return tdf, combined
 
