@@ -1,5 +1,6 @@
 data/
 futures_data/
+screen_data/
 trades_*.csv
 equity_*.csv
 futures_trades.csv
