@@ -190,8 +190,8 @@ def _analyze_stock(code, progress=None):
             importlib.reload(sys.modules[mod])
 
     from strategies import add_indicators, STRATEGIES
-    from backtest import (DATA_DIR as BT_DATA_DIR, compute_rs_rank,
-                          load_regime, load_regime_tiers, load_vol_scalars,
+    from backtest import (DATA_DIR as BT_DATA_DIR,
+                          load_regime_tiers, load_vol_scalars,
                           RISK_PCT, INIT_CAPITAL)
 
     # 1. 更新個股資料
@@ -214,27 +214,67 @@ def _analyze_stock(code, progress=None):
     rs_rank = None
     data_dir = DATA_DIR or BT_DATA_DIR
     try:
-        all_data = {}
-        files = [fn for fn in os.listdir(data_dir)
-                 if fn.endswith(".csv") and not fn.startswith("_")]
+        import pickle
+        from concurrent.futures import ThreadPoolExecutor
+
+        files = sorted([fn for fn in os.listdir(data_dir)
+                        if fn.endswith(".csv") and not fn.startswith("_")])
         total = len(files)
-        last_pct = -1
-        for n, fn in enumerate(files):
-            c = fn[:-4]
-            tdf = pd.read_csv(os.path.join(data_dir, fn), parse_dates=["date"])
-            tdf = add_indicators(tdf).reset_index(drop=True)
-            if len(tdf) >= 130:
-                all_data[c] = tdf
-            pct = int((n + 1) / total * 100) if total else 100
-            if pct >= last_pct + 10:        # 每 10% 更新一次, 不洗版
-                last_pct = pct
-                note(f"⏳ {code}: 掃描全市場算 RS 排名 {pct}% "
-                     f"({n + 1}/{total})")
-        note(f"⏳ {code}: RS 計算中...")
-        if all_data and code in all_data:
-            rs = compute_rs_rank(all_data)
+
+        # 快取: 若 _rs_cache.pkl 比所有 CSV 都新則直接讀取
+        cache_path = os.path.join(data_dir, "_rs_cache.pkl")
+        cache_valid = False
+        if os.path.exists(cache_path):
+            cache_mtime = os.path.getmtime(cache_path)
+            newest_csv = max(os.path.getmtime(os.path.join(data_dir, fn))
+                             for fn in files) if files else 0
+            cache_valid = cache_mtime >= newest_csv
+
+        if cache_valid:
+            note(f"⏳ {code}: 讀取 RS 快取...")
+            with open(cache_path, "rb") as f:
+                rs_panel = pickle.load(f)
+        else:
+            # 並行讀 close 列 (只需要 126 日報酬, 不用完整 indicators)
+            def load_close(fn):
+                try:
+                    df_c = pd.read_csv(os.path.join(data_dir, fn),
+                                       usecols=["date", "close"],
+                                       parse_dates=["date"])
+                    return fn[:-4], df_c.set_index("date")["close"]
+                except Exception:  # noqa: BLE001
+                    return fn[:-4], None
+
+            note(f"⏳ {code}: 並行讀取 {total} 檔...")
+            closes = {}
+            with ThreadPoolExecutor(max_workers=16) as ex:
+                futs = {ex.submit(load_close, fn): fn for fn in files}
+                done = 0
+                last_pct = -1
+                for fut in futs:
+                    c_code, series = fut.result()
+                    if series is not None:
+                        closes[c_code] = series
+                    done += 1
+                    pct = int(done / total * 100)
+                    if pct >= last_pct + 20:
+                        last_pct = pct
+                        note(f"⏳ {code}: 讀檔 {pct}% ({done}/{total})")
+
+            note(f"⏳ {code}: 計算 RS 排名...")
+            rs_panel = pd.DataFrame(closes)
+            rs_panel = rs_panel.pct_change(126).rank(axis=1, pct=True)
+
+            # 存快取
             try:
-                rs_rank = rs.at[d, code]
+                with open(cache_path, "wb") as f:
+                    pickle.dump(rs_panel, f)
+            except Exception:  # noqa: BLE001
+                pass
+
+        if code in rs_panel.columns:  # type: ignore[operator]
+            try:
+                rs_rank = rs_panel.at[d, code]
                 if np.isnan(rs_rank):
                     rs_rank = None
             except KeyError:
