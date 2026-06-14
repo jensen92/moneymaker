@@ -25,7 +25,8 @@ import pandas as pd
 
 from strategies import STRATEGIES, add_indicators
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+DATA_DIR = os.environ.get(
+    "MM_DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 FEE = 0.001425
 TAX = 0.003
 SLIP = 0.001

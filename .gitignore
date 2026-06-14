@@ -14,3 +14,6 @@ leverage_sweep_results.csv
 __pycache__/
 data_adj/
 picks_c_monthly.csv
+
+# Telegram bot secrets
+.env
