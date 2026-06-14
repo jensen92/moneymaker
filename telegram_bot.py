@@ -393,15 +393,188 @@ def analyze_job(chat_id, code):
         _job_lock.release()
 
 
+# ── 全市場掃描 (符合 C / D 的清單) ──────────────────────────────────────────
+
+def _scan_all(progress=None):
+    """掃全市場, 回傳符合策略 C 或 D 的清單 (標注雙符合 + 進出場點位)."""
+    def note(msg):
+        if progress:
+            progress(msg)
+
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import importlib
+    import numpy as np
+    import pandas as pd
+    from concurrent.futures import ThreadPoolExecutor
+    for mod in ["strategies", "backtest"]:
+        if mod in sys.modules:
+            importlib.reload(sys.modules[mod])
+    from strategies import add_indicators, STRATEGIES
+    from backtest import (DATA_DIR as BT_DATA_DIR, load_regime_tiers,
+                          load_vol_scalars, RISK_PCT, INIT_CAPITAL)
+
+    data_dir = DATA_DIR or BT_DATA_DIR
+    names = {}
+    uni = os.path.join(data_dir, "universe.json")
+    if os.path.exists(uni):
+        import json
+        with open(uni) as f:
+            names = {s["code"]: s["name"] for s in json.load(f)}
+
+    files = sorted([fn for fn in os.listdir(data_dir)
+                    if fn.endswith(".csv") and not fn.startswith("_")])
+    total = len(files)
+
+    # 並行讀取 + 計算指標 (一次完成, 供 RS 與訊號共用)
+    def load_one(fn):
+        try:
+            df = pd.read_csv(os.path.join(data_dir, fn), parse_dates=["date"])
+            df = add_indicators(df).reset_index(drop=True)
+            return fn[:-4], df if len(df) >= 210 else None
+        except Exception:  # noqa: BLE001
+            return fn[:-4], None
+
+    note(f"⏳ 讀取全市場 {total} 檔...")
+    data = {}
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        futs = [ex.submit(load_one, fn) for fn in files]
+        done = 0
+        last_pct = -1
+        for fut in futs:
+            c, df = fut.result()
+            if df is not None:
+                data[c] = df
+            done += 1
+            pct = int(done / total * 100)
+            if pct >= last_pct + 20:
+                last_pct = pct
+                note(f"⏳ 讀取全市場 {pct}% ({done}/{total})")
+
+    # RS 排名: 取各檔最新 126 日報酬橫斷面排序
+    note("⏳ 計算 RS 排名...")
+    ret_last = {}
+    for c, df in data.items():
+        if len(df) > 127:
+            ret_last[c] = df["close"].iloc[-1] / df["close"].iloc[-127] - 1
+    ranks = pd.Series(ret_last).rank(pct=True)
+
+    # 大盤市況 → 有效風險係數 (用於估算建議股數)
+    try:
+        latest_d = max(df["date"].iloc[-1] for df in data.values())
+        tier = load_regime_tiers().get(latest_d, 2)
+        vsca = load_vol_scalars().get(latest_d, 1.0)
+        eff_risk = RISK_PCT * {2: 1.0, 1: 0.6, 0: 0.0}[tier] * vsca
+        tier_str = {2: "強勢(全力)", 1: "盤整(縮手)", 0: "防禦(停進)"}[tier]
+    except Exception:  # noqa: BLE001
+        eff_risk = RISK_PCT
+        tier_str = "未知"
+
+    note("⏳ 套用策略 C / D...")
+    matches = []
+    for c, df in data.items():
+        i = len(df) - 1
+        rk = ranks.get(c)
+        if rk is None or np.isnan(rk):
+            continue
+        sigC = STRATEGIES["C"](df, i, rs_rank=rk)
+        sigD = STRATEGIES["D"](df, i, rs_rank=rk)
+        if not sigC and not sigD:
+            continue
+        sig = sigD or sigC
+        close = df["close"].iloc[-1]
+        stop_pct = sig.get("stop_pct", 0.08)
+        stop = close * (1 - stop_pct)
+        risk_per_sh = close - stop
+        risk_amt = INIT_CAPITAL * eff_risk
+        shares = (int(risk_amt / risk_per_sh / 1000) * 1000
+                  if risk_per_sh > 0 else 0)
+        tag = "CD" if (sigC and sigD) else ("C" if sigC else "D")
+        matches.append({
+            "code": c, "name": names.get(c, ""), "tag": tag,
+            "close": close, "stop": stop, "stop_pct": stop_pct,
+            "shares": shares, "max_hold": sig["max_hold"], "rs": rk,
+        })
+
+    # 排序: 雙符合優先, 再依 RS 由高到低
+    order = {"CD": 0, "D": 1, "C": 2}
+    matches.sort(key=lambda m: (order[m["tag"]], -m["rs"]))
+
+    # 格式化
+    if not matches:
+        return f"📋 全市場掃描 ({latest_d:%Y-%m-%d})\n大盤: {tier_str}\n\n今日無符合 C / D 的標的"
+
+    lines = [
+        f"📋 全市場掃描 ({latest_d:%Y-%m-%d})  大盤: {tier_str}",
+        f"符合標的: {len(matches)} 檔  (CD=雙符合)",
+        f"出場規則: 觸停損 或 跌破MA50 或 滿{matches[0]['max_hold']}日",
+        "",
+    ]
+    for m in matches:
+        nm = f" {m['name']}" if m["name"] else ""
+        lines.append(
+            f"[{m['tag']}] {m['code']}{nm}  RS{m['rs']:.0%}\n"
+            f"   進場 {m['close']:.1f}  停損 {m['stop']:.1f}"
+            f"(-{m['stop_pct']:.0%})  {m['shares']:,}股")
+    return "\n".join(lines)
+
+
+def scan_job(chat_id):
+    if not _job_lock.acquire(blocking=False):
+        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
+        return
+    try:
+        msg_id = send_get_id(chat_id, "⏳ 全市場掃描中...")
+        state = {"last": 0.0}
+
+        def progress(text):
+            now = time.time()
+            if now - state["last"] >= 1.5:
+                state["last"] = now
+                edit(chat_id, msg_id, text)
+
+        result = _scan_all(progress=progress)
+        edit(chat_id, msg_id, "✅ 掃描完成")
+        send(chat_id, result)
+    except Exception as e:  # noqa: BLE001
+        send(chat_id, f"❌ 掃描失敗: {e}")
+    finally:
+        _job_lock.release()
+
+
+def scheduler_loop():
+    """每天 08:00 (本機時間) 自動全市場掃描並推播給授權使用者."""
+    if not ALLOWED_CHAT:
+        print("未設定 TELEGRAM_CHAT_ID, 略過每日排程")
+        return
+    import datetime as dt
+    while True:
+        now = dt.datetime.now()
+        nxt = now.replace(hour=8, minute=0, second=0, microsecond=0)
+        if nxt <= now:
+            nxt += dt.timedelta(days=1)
+        wait = (nxt - now).total_seconds()
+        print(f"下次自動掃描: {nxt:%Y-%m-%d %H:%M}")
+        time.sleep(wait)
+        try:
+            send(ALLOWED_CHAT, "🌅 每日 08:00 自動掃描")
+            scan_job(ALLOWED_CHAT)
+        except Exception as e:  # noqa: BLE001
+            print("排程錯誤:", e)
+        time.sleep(60)  # 避免同一分鐘重複觸發
+
+
 # ── 指令路由 ───────────────────────────────────────────────────────────────
 
 HELP = (
     "📈 策略機器人指令:\n"
-    "/picks              今日 C / D 選股\n"
+    "/scan               全市場掃描 C / D 清單 + 進出場點位\n"
+    "/picks              今日 C / D 選股 (各取前2)\n"
     "/analyze 2330       個股分析 + 進出場價格\n"
     "/backtest [C,D]     組合回測 (慢, 數分鐘)\n"
     "/status             資料 / 機器人狀態\n"
-    "/help               顯示此說明"
+    "/help               顯示此說明\n"
+    "(每日 08:00 自動全市場掃描並推播)"
 )
 
 
@@ -430,6 +603,9 @@ def handle(chat_id, text):
                   ["backtest.py", "--strategies", strats,
                    "--data-dir", DATA_DIR or "data", "--leverage", "1"]),
             daemon=True).start()
+    elif cmd == "scan":
+        threading.Thread(target=scan_job, args=(chat_id,),
+                         daemon=True).start()
     elif cmd == "analyze":
         if not args:
             send(chat_id, "用法: /analyze 2330")
@@ -447,6 +623,8 @@ def main():
     if not TOKEN:
         raise SystemExit("請先設定環境變數 TELEGRAM_BOT_TOKEN")
     print("策略機器人啟動, 等待指令... (Ctrl+C 結束)")
+    # 啟動每日 08:00 自動掃描排程
+    threading.Thread(target=scheduler_loop, daemon=True).start()
     try:
         r0 = requests.get(f"{API}/getUpdates", params={"offset": -1}, timeout=10)
         updates0 = r0.json().get("result", [])
