@@ -221,21 +221,23 @@ def _analyze_stock(code, progress=None):
                         if fn.endswith(".csv") and not fn.startswith("_")])
         total = len(files)
 
-        # 快取: 若 _rs_cache.pkl 比所有 CSV 都新則直接讀取
-        cache_path = os.path.join(data_dir, "_rs_cache.pkl")
+        # 快取 126 日報酬矩陣 (date x code). 判斷新舊時「排除目標股票自己」,
+        # 因為每次分析都會更新目標 CSV, 否則快取永遠失效. 其它檔只在批次更新時變動.
+        cache_path = os.path.join(data_dir, "_ret_cache.pkl")
         cache_valid = False
         if os.path.exists(cache_path):
             cache_mtime = os.path.getmtime(cache_path)
-            newest_csv = max(os.path.getmtime(os.path.join(data_dir, fn))
-                             for fn in files) if files else 0
+            others = [fn for fn in files if fn[:-4] != code]
+            newest_csv = max((os.path.getmtime(os.path.join(data_dir, fn))
+                              for fn in others), default=0)
             cache_valid = cache_mtime >= newest_csv
 
         if cache_valid:
             note(f"⏳ {code}: 讀取 RS 快取...")
             with open(cache_path, "rb") as f:
-                rs_panel = pickle.load(f)
+                ret_panel = pickle.load(f)
         else:
-            # 並行讀 close 列 (只需要 126 日報酬, 不用完整 indicators)
+            # 並行讀 close 列 (只需 126 日報酬, 不用完整 indicators)
             def load_close(fn):
                 try:
                     df_c = pd.read_csv(os.path.join(data_dir, fn),
@@ -248,7 +250,7 @@ def _analyze_stock(code, progress=None):
             note(f"⏳ {code}: 並行讀取 {total} 檔...")
             closes = {}
             with ThreadPoolExecutor(max_workers=16) as ex:
-                futs = {ex.submit(load_close, fn): fn for fn in files}
+                futs = [ex.submit(load_close, fn) for fn in files]
                 done = 0
                 last_pct = -1
                 for fut in futs:
@@ -261,24 +263,30 @@ def _analyze_stock(code, progress=None):
                         last_pct = pct
                         note(f"⏳ {code}: 讀檔 {pct}% ({done}/{total})")
 
-            note(f"⏳ {code}: 計算 RS 排名...")
-            rs_panel = pd.DataFrame(closes)
-            rs_panel = rs_panel.pct_change(126).rank(axis=1, pct=True)
-
-            # 存快取
+            note(f"⏳ {code}: 計算報酬矩陣...")
+            ret_panel = pd.DataFrame(closes).pct_change(126)
             try:
                 with open(cache_path, "wb") as f:
-                    pickle.dump(rs_panel, f)
+                    pickle.dump(ret_panel, f)
             except Exception:  # noqa: BLE001
                 pass
 
-        if code in rs_panel.columns:  # type: ignore[operator]
-            try:
-                rs_rank = rs_panel.at[d, code]
-                if np.isnan(rs_rank):
-                    rs_rank = None
-            except KeyError:
-                rs_rank = None
+        # 只對需要的「那一天」即時排名 (一列, 極快); 用目標股票最新報酬即時計算,
+        # 不依賴快取是否含目標當日資料 → 快取可跨日重用其它股票
+        try:
+            target_ret = (df["close"].iloc[-1] / df["close"].iloc[-127] - 1
+                          if len(df) > 127 else None)
+            if target_ret is not None and d in ret_panel.index:
+                row = ret_panel.loc[d].dropna()
+            elif target_ret is not None and len(ret_panel):
+                row = ret_panel.iloc[-1].dropna()  # 快取最後一日近似
+            else:
+                row = None
+            if row is not None and len(row):
+                row = row.drop(labels=[code], errors="ignore")
+                rs_rank = float((row < target_ret).mean())
+        except Exception:  # noqa: BLE001
+            rs_rank = None
     except Exception:  # noqa: BLE001
         rs_rank = None
 
