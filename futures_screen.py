@@ -156,15 +156,14 @@ def trend_metrics(df, system="donchian", allow_short=True):
 
 
 # 分散示範用的籃子 (流動性 A/B 為主)
+# ★ 精選 5 標的: 每板塊各 1 個 (金屬/股指/農產/債券/肉品), 長史+高流動, 經前後半驗證
+#   貪婪前向選擇 + 「每板塊最多 1 個」約束 + 長史 (≥20年) 篩出, 上限 5 項。
 BASKETS = {
     "只有三穀物": ["ZS=F", "ZW=F", "ZC=F"],
-    "穀物+軟商品+肉品": ["ZS=F", "ZW=F", "ZC=F", "ZL=F", "KC=F", "SB=F",
-                  "CT=F", "LE=F"],
+    "★精選5(黃豆油)": ["GC=F", "NQ=F", "ZL=F", "ZT=F", "LE=F"],
+    "★精選5(保留黃豆)": ["GC=F", "NQ=F", "ZS=F", "ZT=F", "LE=F"],
     "跨板塊 12 標的": ["ES=F", "NQ=F", "ZN=F", "ZT=F", "CL=F", "GC=F", "HG=F",
                   "6E=F", "6J=F", "ZS=F", "ZC=F", "LE=F"],
-    "跨板塊 18 標的": ["ES=F", "NQ=F", "RTY=F", "ZN=F", "ZT=F", "ZF=F", "CL=F",
-                  "BZ=F", "GC=F", "HG=F", "6E=F", "6J=F", "6C=F", "ZS=F",
-                  "ZC=F", "ZL=F", "LE=F", "BTC=F"],
 }
 
 
