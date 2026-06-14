@@ -46,6 +46,30 @@ def send(chat_id, text):
             print("send error:", e)
 
 
+def send_get_id(chat_id, text):
+    """送訊息並回傳 message_id (供後續 edit 更新進度)."""
+    try:
+        r = requests.post(f"{API}/sendMessage",
+                          data={"chat_id": chat_id, "text": text},
+                          timeout=30)
+        return r.json().get("result", {}).get("message_id")
+    except (requests.RequestException, ValueError) as e:
+        print("send error:", e)
+        return None
+
+
+def edit(chat_id, message_id, text):
+    """更新既有訊息 (進度回報用, 不洗版)."""
+    if message_id is None:
+        return
+    try:
+        requests.post(f"{API}/editMessageText",
+                      data={"chat_id": chat_id, "message_id": message_id,
+                            "text": text}, timeout=30)
+    except requests.RequestException as e:
+        print("edit error:", e)
+
+
 def run_script(args):
     env = dict(os.environ)
     if DATA_DIR:
@@ -143,8 +167,15 @@ def _update_stock_data(code):
     return path, msg
 
 
-def _analyze_stock(code):
-    """下載最新資料, 用策略 C/D 分析現況, 回傳文字報告."""
+def _analyze_stock(code, progress=None):
+    """下載最新資料, 用策略 C/D 分析現況, 回傳文字報告.
+
+    progress: 可選 callback(text), 用於即時回報掃描進度.
+    """
+    def note(msg):
+        if progress:
+            progress(msg)
+
     # 把 HERE 加進 sys.path 讓 import 找到 strategies / backtest
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
@@ -164,6 +195,7 @@ def _analyze_stock(code):
                           RISK_PCT, INIT_CAPITAL)
 
     # 1. 更新個股資料
+    note(f"⏳ {code}: 下載最新資料中...")
     path, dl_msg = _update_stock_data(code)
     if path is None or not os.path.exists(path):
         return f"❌ {code}: {dl_msg}"
@@ -183,14 +215,22 @@ def _analyze_stock(code):
     data_dir = DATA_DIR or BT_DATA_DIR
     try:
         all_data = {}
-        for fn in os.listdir(data_dir):
-            if not fn.endswith(".csv") or fn.startswith("_"):
-                continue
+        files = [fn for fn in os.listdir(data_dir)
+                 if fn.endswith(".csv") and not fn.startswith("_")]
+        total = len(files)
+        last_pct = -1
+        for n, fn in enumerate(files):
             c = fn[:-4]
             tdf = pd.read_csv(os.path.join(data_dir, fn), parse_dates=["date"])
             tdf = add_indicators(tdf).reset_index(drop=True)
             if len(tdf) >= 130:
                 all_data[c] = tdf
+            pct = int((n + 1) / total * 100) if total else 100
+            if pct >= last_pct + 10:        # 每 10% 更新一次, 不洗版
+                last_pct = pct
+                note(f"⏳ {code}: 掃描全市場算 RS 排名 {pct}% "
+                     f"({n + 1}/{total})")
+        note(f"⏳ {code}: RS 計算中...")
         if all_data and code in all_data:
             rs = compute_rs_rank(all_data)
             try:
@@ -286,8 +326,18 @@ def analyze_job(chat_id, code):
         send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
         return
     try:
-        send(chat_id, f"⏳ 分析 {code} 中...")
-        result = _analyze_stock(code)
+        msg_id = send_get_id(chat_id, f"⏳ 分析 {code} 中...")
+        # 進度節流: 至少間隔 1.5 秒才 edit 一次, 避免觸發 Telegram 限流
+        state = {"last": 0.0}
+
+        def progress(text):
+            now = time.time()
+            if now - state["last"] >= 1.5:
+                state["last"] = now
+                edit(chat_id, msg_id, text)
+
+        result = _analyze_stock(code, progress=progress)
+        edit(chat_id, msg_id, f"✅ {code} 分析完成")
         send(chat_id, result)
     except Exception as e:  # noqa: BLE001
         send(chat_id, f"❌ 分析失敗: {e}")
