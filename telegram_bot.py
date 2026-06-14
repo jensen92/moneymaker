@@ -121,7 +121,13 @@ def main():
     if not TOKEN:
         raise SystemExit("請先設定環境變數 TELEGRAM_BOT_TOKEN")
     print("策略機器人啟動, 等待指令... (Ctrl+C 結束)")
-    offset = None
+    # 清空積壓的舊訊息, 避免啟動後重播歷史指令
+    try:
+        r0 = requests.get(f"{API}/getUpdates", params={"offset": -1}, timeout=10)
+        updates0 = r0.json().get("result", [])
+        offset = updates0[-1]["update_id"] + 1 if updates0 else None
+    except Exception:  # noqa: BLE001
+        offset = None
     while True:
         try:
             r = requests.get(f"{API}/getUpdates",
