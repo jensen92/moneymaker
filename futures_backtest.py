@@ -26,6 +26,16 @@ COMMISSION = 2.5         # 每口每邊手續費 (美元)
 SLIP_TICKS = 1.0         # 每邊滑價 (跳動點數)
 TRADING_DAYS = 252
 
+# 加碼 (Turtle pyramiding): 順勢每走 PYRAMID_STEP×N 加 1 注, 最多 PYRAMID_MAX_ADDS 注,
+# 每次加碼把停損上移至最新進場點下方 stop_atr×N, 鎖住既有利潤。設 0 即關閉加碼。
+# 樣本外驗證: 加 1 注 (max1) 同時提升 OOS CAGR/Sharpe/PF/MAR (非單純放大槓桿);
+# max2 報酬更高但 Sharpe 持平; max3 過頭反而劣化。故預設 max1。
+PYRAMID_MAX_ADDS = 1
+PYRAMID_STEP = 0.5
+# 加碼後停損規則: True=只上移到原始進場價(保本, 讓主趨勢續抱);
+# False=Turtle 式上移到最新加碼點下方 stop_atr×N (鎖利較緊, 回檔易被洗)
+PYRAMID_STOP_BREAKEVEN = True
+
 
 def load_all():
     data = {}
@@ -151,7 +161,34 @@ def _open_position(market, s, di, df, equity):
         "expire_idx": di + s["max_hold"],
         "hi_ext": entry, "init_atr": atr,
         "risk_amt": contracts * stop_dist * pv,
+        # 加碼用
+        "pyramid": s.get("pyramid", False), "stop_atr": s["stop_atr"],
+        "entry0": entry, "unit": contracts, "adds": 0,
     }
+
+
+def _maybe_pyramid(p, row, equity):
+    """順勢加碼 (Turtle): 每走 PYRAMID_STEP×初始N 加 1 注並上移停損。"""
+    if not p["pyramid"] or PYRAMID_MAX_ADDS <= 0 or p["unit"] <= 0:
+        return
+    pv = FUTURES[p["market"]]["point_value"]
+    atr = p["init_atr"]
+    while p["adds"] < PYRAMID_MAX_ADDS:
+        trigger = p["entry0"] + p["dir"] * PYRAMID_STEP * atr * (p["adds"] + 1)
+        if (p["dir"] > 0 and row["high"] < trigger) or \
+           (p["dir"] < 0 and row["low"] > trigger):
+            break
+        add_n = p["unit"]
+        if (p["contracts"] + add_n) * trigger * pv > equity * MAX_NOTIONAL:
+            break
+        total = p["contracts"] + add_n
+        p["entry"] = (p["contracts"] * p["entry"] + add_n * trigger) / total
+        p["contracts"] = total
+        p["adds"] += 1
+        new_stop = (p["entry0"] if PYRAMID_STOP_BREAKEVEN
+                    else trigger - p["dir"] * p["stop_atr"] * atr)
+        p["stop"] = (max(p["stop"], new_stop) if p["dir"] > 0
+                     else min(p["stop"], new_stop))
 
 
 def run_strategy(data, entry_map, key, init_eq, all_dates, date_idx,
@@ -182,6 +219,7 @@ def run_strategy(data, entry_map, key, init_eq, all_dates, date_idx,
                 del open_pos[market]
             else:
                 _update_trail(p, row)
+                _maybe_pyramid(p, row, cash)
 
         # 2. 計算未實現權益 (mark-to-market)
         unreal = 0.0

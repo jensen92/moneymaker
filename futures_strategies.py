@@ -79,10 +79,10 @@ def signal_t(df, i):
         return None
     if row["close"] > row[f"dc_hi{c['entry']}"] and row["close"] > tr:
         return {"dir": +1, "stop_atr": c["stop"], "exit_channel": c["exit"],
-                "max_hold": c["max_hold"]}
+                "max_hold": c["max_hold"], "pyramid": True}
     if ALLOW_SHORT and row["close"] < row[f"dc_lo{c['entry']}"] and row["close"] < tr:
         return {"dir": -1, "stop_atr": c["stop"], "exit_channel": c["exit"],
-                "max_hold": c["max_hold"]}
+                "max_hold": c["max_hold"], "pyramid": True}
     return None
 
 
@@ -95,10 +95,10 @@ def signal_d(df, i):
         return None
     if row["close"] > row[f"dc_hi{c['entry']}"] and row["close"] > tr:
         return {"dir": +1, "stop_atr": c["stop"], "exit_channel": c["exit"],
-                "max_hold": c["max_hold"]}
+                "max_hold": c["max_hold"], "pyramid": True}
     if ALLOW_SHORT and row["close"] < row[f"dc_lo{c['entry']}"] and row["close"] < tr:
         return {"dir": -1, "stop_atr": c["stop"], "exit_channel": c["exit"],
-                "max_hold": c["max_hold"]}
+                "max_hold": c["max_hold"], "pyramid": True}
     return None
 
 
@@ -112,11 +112,11 @@ def signal_m(df, i):
     cross_up = prev[f] <= prev[s] and row[f] > row[s]
     cross_dn = prev[f] >= prev[s] and row[f] < row[s]
     if cross_up:
-        return {"dir": +1, "stop_atr": c["stop"],
-                "exit_ma": (c["fast"], c["slow"]), "max_hold": c["max_hold"]}
+        return {"dir": +1, "stop_atr": c["stop"], "exit_ma": (c["fast"], c["slow"]),
+                "max_hold": c["max_hold"], "pyramid": True}
     if ALLOW_SHORT and cross_dn:
-        return {"dir": -1, "stop_atr": c["stop"],
-                "exit_ma": (c["fast"], c["slow"]), "max_hold": c["max_hold"]}
+        return {"dir": -1, "stop_atr": c["stop"], "exit_ma": (c["fast"], c["slow"]),
+                "max_hold": c["max_hold"], "pyramid": True}
     return None
 
 
