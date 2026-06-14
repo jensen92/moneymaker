@@ -14,8 +14,12 @@ from backtest import compute_rs_rank
 
 
 def main():
-    with open(os.path.join(DATA_DIR, "universe.json")) as f:
-        names = {s["code"]: s["name"] for s in json.load(f)}
+    uni = os.path.join(DATA_DIR, "universe.json")
+    if os.path.exists(uni):
+        with open(uni) as f:
+            names = {s["code"]: s["name"] for s in json.load(f)}
+    else:
+        names = {}
 
     # 載入所有股票 (需要 RS rank)
     all_data = {}
