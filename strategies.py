@@ -559,4 +559,90 @@ def signal_f(df, i, rs_rank=None):
     }
 
 
-STRATEGIES = {"A": signal_a, "C": signal_c, "D": signal_d, "E": signal_e, "F": signal_f}
+
+# ─────────────────────────────────────────────────────────────
+# 策略 G — Darvas Box (Nicolas Darvas《我如何在股市賺了200萬》)
+# ─────────────────────────────────────────────────────────────
+# 設計理念: Darvas 在 1950s 靠此方法把 25,000 美元變 200 萬.
+#   核心: 找「盒型整理」→ 盒頂突破 + 爆量 → 進場.
+#   盒型定義:
+#     1. 先找近期高點 (box_top): 前 N 日中, 有連續 box_confirm 根 K 未超過此高點
+#     2. 盒底 (box_bottom): 整理期間最低點
+#     3. 今日收盤突破 box_top → 進場
+#     4. 量能: 今日成交量 > vol_ma50 × vol_mult 倍 (爆量確認)
+#     5. RS 篩選: 只做高 RS 股 (rs_min), 避免弱股假突破
+#   停損: 跌回 box_bottom 以下即出場 (盒底停損)
+#   出場: 讓利潤奔跑; 最長 90 日
+#   特色: 進場邏輯是「盒型整理後突破」而非 VCP (C/D 是波動收縮型態);
+#         量能爆量 + 盒底停損 與 C/D 的 ATR 停損截然不同 → 低相關.
+G_CONFIG = {
+    "box_window":   20,    # 找盒型的回顧窗口
+    "box_confirm":   3,    # 盒頂右側需連續幾根未超過
+    "vol_mult":     1.5,   # 突破量 > vol_ma50 × 1.5
+    "rs_min":       0.70,  # RS 排名下限 (70 百分位)
+    "stop_pct":     0.08,  # 盒底停損 (若盒底太遠則用 8%)
+    "gain_cap":     9.99,  # 讓利潤奔跑
+    "max_hold":     90,    # 最長持有 90 日
+    "min_price":    10.0,  # 最低股價門檻
+}
+
+
+def signal_g(df, i, rs_rank=None):
+    """Darvas Box 突破 (策略 G).
+
+    進場條件:
+      1. RS 排名 >= rs_min
+      2. 識別盒型整理 (box_window 天內找盒頂, 右側 box_confirm 根未突破)
+      3. 今日收盤突破盒頂
+      4. 今日成交量 > vol_ma50 × vol_mult
+    停損: max(盒底以下 1%, 8% 固定停損)
+    """
+    cfg = G_CONFIG
+    if i < cfg["box_window"] + cfg["box_confirm"] + 10:
+        return None
+    if rs_rank is None or np.isnan(rs_rank) or rs_rank < cfg["rs_min"]:
+        return None
+    row = df.iloc[i]
+    if row["close"] < cfg["min_price"]:
+        return None
+    vol_ma50 = row.get("vol_ma50", float("nan"))
+    if np.isnan(vol_ma50) or vol_ma50 <= 0:
+        return None
+    if row["volume"] < vol_ma50 * cfg["vol_mult"]:
+        return None
+
+    # 識別盒型: 在 [i-box_window-box_confirm, i-box_confirm) 找最高點作為 box_top
+    # 然後確認 [i-box_confirm, i) 這幾根都未超過 box_top
+    search_start = i - cfg["box_window"] - cfg["box_confirm"]
+    search_end   = i - cfg["box_confirm"]
+    if search_start < 0:
+        return None
+    box_top = df["high"].iloc[search_start:search_end].max()
+    # 右側確認: box_confirm 根都在 box_top 以下
+    confirm_highs = df["high"].iloc[search_end:i]
+    if (confirm_highs > box_top).any():
+        return None
+    # 今日突破盒頂
+    if row["close"] <= box_top:
+        return None
+    # 盒底: 整理區間最低點
+    box_bottom = df["low"].iloc[search_start:i].min()
+    box_depth = (box_top - box_bottom) / box_top
+    # 盒型太淺或太深視為無效
+    if box_depth < 0.05 or box_depth > 0.35:
+        return None
+    # 停損取「盒底下 1%」或「固定 stop_pct」之較小者 (保護更緊)
+    stop_from_box = (row["close"] - box_bottom * 0.99) / row["close"]
+    stop_pct = min(stop_from_box, cfg["stop_pct"])
+    stop_pct = max(stop_pct, 0.03)  # 最小 3%
+
+    return {
+        "score":    rs_rank,
+        "stop_pct": stop_pct,
+        "gain_cap": cfg["gain_cap"],
+        "max_hold": cfg["max_hold"],
+    }
+
+
+STRATEGIES = {"A": signal_a, "C": signal_c, "D": signal_d, "E": signal_e,
+              "F": signal_f, "G": signal_g}
