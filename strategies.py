@@ -506,4 +506,57 @@ def signal_e(df, i, rs_rank=None):
     return _e_signal(_e_features(df, i, rs_rank), E_CONFIG)
 
 
-STRATEGIES = {"A": signal_a, "C": signal_c, "D": signal_d, "E": signal_e}
+
+# ─────────────────────────────────────────────────────────────
+# 策略 F — 海龜交易法則 (Turtle Trading System 2)
+# ─────────────────────────────────────────────────────────────
+# 設計理念: Richard Dennis / William Eckhardt 海龜系統 2.
+#   進場: 收盤突破 55 日通道高點 (前 55 日最高價); 無 VCP / RS 篩選 (流動性即可).
+#   停損: 入場價 × (1 - 2×ATR14/close), 上限 20%.
+#   出場: 讓利潤奔跑 (gain_cap=9.99); 最長持有 60 日 (引擎保底).
+#   特色: 與 C/D (VCP 突破 + RS 篩選) 進場邏輯截然不同 → 低相關性.
+#   簡化: 不做加碼 (引擎為單倉模式); 不用 10/20 日通道低出場 (改用 ATR 停損).
+F_CONFIG = {
+    "channel_days": 55,    # 55 日通道突破 (System 2)
+    "atr_stop_mult": 2.0,  # 停損 = 2×ATR14
+    "stop_max":      0.20, # 停損上限 20%
+    "gain_cap":      9.99, # 讓利潤奔跑 (無上限)
+    "max_hold":      60,   # 最長持有 60 日 (保底出場)
+    "min_turnover":  50_000_000,  # 最低成交額門檻
+}
+
+
+def signal_f(df, i, rs_rank=None):
+    """海龜交易系統 2 (策略 F) — 55 日通道突破.
+
+    不需要 RS 排名; 任何有流動性的股票均可. 進場條件:
+      1. 最低成交額 > 5000 萬
+      2. 今日收盤 > 前 55 日最高價 (不含今日)
+      3. ATR14 有效 (至少 14 根 K 線)
+    停損 = 2×ATR14 / close (上限 20%).
+    """
+    cfg = F_CONFIG
+    if i < cfg["channel_days"] + 1:
+        return None
+    row = df.iloc[i]
+    if row["close"] < 10:
+        return None
+    if row["volume"] * row["close"] < cfg["min_turnover"]:
+        return None
+    atr14 = row.get("atr14", float("nan"))
+    if np.isnan(atr14) or atr14 <= 0:
+        return None
+    # 55 日通道高點 (不含今日)
+    channel_high = df["high"].iloc[i - cfg["channel_days"]: i].max()
+    if row["close"] <= channel_high:
+        return None
+    stop_pct = min(cfg["atr_stop_mult"] * atr14 / row["close"], cfg["stop_max"])
+    return {
+        "score":    0.5,          # 無 RS 排名, 給固定中間分
+        "stop_pct": stop_pct,
+        "gain_cap": cfg["gain_cap"],
+        "max_hold": cfg["max_hold"],
+    }
+
+
+STRATEGIES = {"A": signal_a, "C": signal_c, "D": signal_d, "E": signal_e, "F": signal_f}
