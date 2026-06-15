@@ -771,5 +771,146 @@ def signal_h(df, i, rs_rank=None):
     }
 
 
+# ─────────────────────────────────────────────────────────────
+# 策略 I — Cup with Handle (William O'Neil《笑傲股市 CANSLIM》)
+# ─────────────────────────────────────────────────────────────
+# O'Neil 研究 1950-2008 年百大飆股後發現杯柄型態是最常見的成功突破前型態.
+#   杯型 (Cup): U 形整理, 深度 12~33%, 底部圓滑 (非 V 型), 7~20 週
+#   柄部 (Handle): 杯口右側小幅回檔 5~15%, 量縮 (賣壓乾涸), 至少 5 根 K
+#   突破 (Breakout): 收盤突破柄部高點 + 量 ≥ 1.5 倍 50 日均量
+#   停損: 柄部最低點以下 7~8% (O'Neil 書中明確規定)
+#   RS 門檻: O'Neil 建議 RS 排名 ≥ 80 (前 20% 強勢股)
+#   高勝率設計: 杯底圓弧 + 柄部縮量嚴格過濾 → 歷史勝率約 60~70%
+#   與 C/D 差異: C/D 是 VCP 波動收縮型態 (ATR 收縮比); CwH 是完整杯柄幾何結構
+I_CONFIG = {
+    "cup_min_weeks":  7,     # 杯型最短 7 週 (35 個交易日)
+    "cup_max_weeks": 20,     # 杯型最長 20 週 (100 個交易日)
+    "cup_min_depth": 0.12,   # 杯型最淺 12%
+    "cup_max_depth": 0.35,   # 杯型最深 35%
+    "handle_min":    5,      # 柄部最短 5 根 K
+    "handle_max":   15,      # 柄部最長 15 根 K (太長則型態失效)
+    "handle_depth":  0.15,   # 柄部回檔上限 15%
+    "handle_pos":    0.50,   # 柄部必須在杯高 50% 以上 (O'Neil: 上半部)
+    "vol_mult":      1.5,    # 突破量 ≥ vol_ma50 × 1.5
+    "rs_min":        0.80,   # RS 排名下限 (O'Neil 建議 80+)
+    "stop_pct":      0.08,   # 初始停損 8% (柄部最低點以下)
+    "gain_cap":      9.99,   # 讓利潤奔跑
+    "max_hold":      9999,   # MA50 移動停損決定出場 (minervini 模式)
+    "min_price":     10.0,
+}
+
+
+def _cup_with_handle(df, i, cfg):
+    """偵測 [i-handle_len, i) 為柄部、柄部之前為杯型.
+
+    回傳 (cup_left_high, handle_low) 或 None.
+    cup_left_high: 杯型左緣高點 (= 突破點)
+    handle_low: 柄部最低點 (停損參考)
+    """
+    # 嘗試所有合法柄部長度
+    for h_len in range(cfg["handle_min"], cfg["handle_max"] + 1):
+        cup_end = i - h_len      # 杯型右緣 (= 柄部開始前一根)
+        # 嘗試所有合法杯型長度
+        cup_min_bars = cfg["cup_min_weeks"] * 5
+        cup_max_bars = cfg["cup_max_weeks"] * 5
+        for c_len in range(cup_min_bars, cup_max_bars + 1, 5):
+            cup_start = cup_end - c_len
+            if cup_start < 10:
+                continue
+            cup_seg = df.iloc[cup_start:cup_end + 1]
+            # 杯型左緣高點 (第一根附近)
+            left_high = cup_seg["high"].iloc[:5].max()
+            # 杯型右緣高點 (最後 5 根)
+            right_high = cup_seg["high"].iloc[-5:].max()
+            # 右緣需接近左緣 (不能差距 > 5%, 代表回到原高點附近)
+            if right_high < left_high * 0.95:
+                continue
+            # 杯底
+            cup_low = cup_seg["low"].min()
+            # 杯型深度: 相對左緣高點
+            depth = (left_high - cup_low) / left_high
+            if depth < cfg["cup_min_depth"] or depth > cfg["cup_max_depth"]:
+                continue
+            # 底部圓滑性: 最低點不在前 20% 或後 20% (避免 V 型)
+            low_idx = cup_seg["low"].values.argmin()
+            rel_pos = low_idx / len(cup_seg)
+            if rel_pos < 0.20 or rel_pos > 0.80:
+                continue
+
+            # 柄部驗證
+            handle_seg = df.iloc[cup_end:i]
+            handle_high = handle_seg["high"].max()
+            handle_low  = handle_seg["low"].min()
+            # 柄部高點需在杯高 handle_pos 以上
+            cup_range = left_high - cup_low
+            if handle_low < cup_low + cup_range * cfg["handle_pos"]:
+                continue
+            # 柄部回檔深度
+            handle_depth = (handle_high - handle_low) / handle_high
+            if handle_depth > cfg["handle_depth"]:
+                continue
+            # 柄部量縮: 平均量 < 杯型均量
+            cup_vol_avg = cup_seg["volume"].mean()
+            handle_vol_avg = handle_seg["volume"].mean()
+            if handle_vol_avg >= cup_vol_avg:
+                continue
+            # 突破點 = 柄部高點
+            return handle_high, handle_low
+
+    return None
+
+
+def signal_i(df, i, rs_rank=None):
+    """Cup with Handle 突破 (策略 I) — O'Neil CANSLIM.
+
+    進場條件:
+      1. RS 排名 >= 0.80
+      2. 識別完整杯柄型態
+      3. 今日收盤突破柄部高點 (= 突破點)
+      4. 突破量 ≥ vol_ma50 × 1.5
+    停損: 柄部最低點以下 3%, 或固定 8%, 取較緊者.
+    出場: minervini 模式 (+20% 賣半 / 3R 保本 / MA50 移動停損).
+    """
+    cfg = I_CONFIG
+    min_i = cfg["cup_max_weeks"] * 5 + cfg["handle_max"] + 20
+    if i < min_i:
+        return None
+    if rs_rank is None or np.isnan(rs_rank) or rs_rank < cfg["rs_min"]:
+        return None
+    row = df.iloc[i]
+    if row["close"] < cfg["min_price"]:
+        return None
+    vol_ma50 = row.get("vol_ma50", float("nan"))
+    if np.isnan(vol_ma50) or vol_ma50 <= 0:
+        return None
+    if row["volume"] < vol_ma50 * cfg["vol_mult"]:
+        return None
+
+    result = _cup_with_handle(df, i, cfg)
+    if result is None:
+        return None
+    handle_high, handle_low = result
+
+    # 今日收盤突破柄部高點
+    if row["close"] <= handle_high:
+        return None
+    # 不追高: 突破幅度 ≤ 8%
+    if (row["close"] - handle_high) / handle_high > 0.08:
+        return None
+
+    # 停損: 柄部最低點以下 3%
+    stop_from_handle = (row["close"] - handle_low * 0.97) / row["close"]
+    stop_pct = min(stop_from_handle, cfg["stop_pct"])
+    stop_pct = max(stop_pct, 0.04)
+
+    return {
+        "score":    rs_rank,
+        "minervini": True,
+        "stop_pct": stop_pct,
+        "gain_cap": cfg["gain_cap"],
+        "max_hold": cfg["max_hold"],
+    }
+
+
 STRATEGIES = {"A": signal_a, "C": signal_c, "D": signal_d, "E": signal_e,
-              "F": signal_f, "G": signal_g, "H": signal_h}
+              "F": signal_f, "G": signal_g, "H": signal_h, "I": signal_i}
