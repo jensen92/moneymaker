@@ -395,21 +395,26 @@ def signal_d(df, i, rs_rank=None):
 #         + RSI(14) 曾超賣 (<40) 後出現反轉 K (收紅且收復前日高).
 #   出場: 較短線 (mean-reversion 性質) — 停損 / 2.5R 停利 / ATR 移動停損 / 最長持有.
 #         非 minervini 模式 (不套 MA50 全出與 +20% 賣半).
+# optimize_e.py 掃描最佳 (正期望值 + 與 C/D 低相關). 進場品質是關鍵:
+#   買「淺回檔到上升 MA20 的領導股」(健康回檔), 而非「深跌 RSI 崩到 MA50」(接刀);
+#   並要求回檔時量縮 (賣壓乾涸) + 反轉日確認.
 E_CONFIG = {
-    "rs_min":        0.75,   # RS 門檻 (玩多頭領導股)
-    "pullback_min":  0.08,   # 自近 40 日高至少回檔 8% (要有回檔才買)
-    "pullback_max":  0.25,   # 回檔不超過 25% (超過視為轉弱)
-    "near_ma_pct":   0.04,   # 近 5 日最低觸及 MA20 或 MA50 ±4% (回測支撐)
-    "rsi_os":        40.0,   # RSI(14) 曾 < 40 (短線超賣)
-    "stop_pct":      0.07,   # 停損 7% (回檔買進, 支撐失守即止損)
-    "target_r":      2.5,    # 停利 2.5R (mean-reversion 較快了結)
-    "trail_atr":     3.0,    # ATR 移動停損 (讓部分單能續抱)
-    "max_hold":      30,     # 最長持有 30 日 (短於 C/D)
+    "rs_min":         0.80,   # RS 門檻 (領導股)
+    "pullback_min":   0.05,   # 自近 40 日高至少回檔 5%
+    "pullback_max":   0.18,   # 回檔不超過 18% (淺回檔才健康, 深跌不接)
+    "near_ma_pct":    0.05,   # 近 5 日最低觸及 MA20 ±5% (回測上升均線)
+    "rsi_os":         50.0,   # RSI(14) 曾 < 50 (短線降溫即可, 不必崩跌)
+    "require_dryup":  True,    # 回檔需量縮 (近 3 日均量 < 50 日均量)
+    "require_ma20_up": True,   # MA20 須上升 (確認回檔發生在上升結構)
+    "stop_pct":       0.07,   # 停損 7%
+    "target_r":       2.0,     # 停利 2.0R (mean-reversion 較快了結)
+    "trail_atr":      0.0,     # 0 = 不用 ATR 移動停損 (純停利/停損/時間)
+    "max_hold":       25,      # 最長持有 25 日
 }
 
 
 def _e_features(df, i, rs_rank):
-    """抽取策略 E 所需原始特徵 (長多排列 + 回檔/支撐/超賣), 不符回傳 None."""
+    """抽取策略 E 原始特徵 (長多排列 + 回檔/支撐/超賣/量縮), 不符回傳 None."""
     row = df.iloc[i]
     if np.isnan(row["ma200"]) or np.isnan(row["rsi14"]) or row["close"] < 10:
         return None
@@ -428,22 +433,29 @@ def _e_features(df, i, rs_rank):
     # 自近 40 日高點的回檔幅度
     hi40 = df["high"].iloc[max(0, i - 39):i + 1].max()
     pullback = (hi40 - row["close"]) / hi40 if hi40 > 0 else 0.0
-    # 近 5 日最低是否回測 MA20 / MA50 支撐
+    # 近 5 日最低與 MA20 / MA50 的距離 (回測支撐程度)
     lo5 = df["low"].iloc[max(0, i - 4):i + 1].min()
     near_ma20 = abs(lo5 - row["ma20"]) / row["ma20"] if row["ma20"] > 0 else 9.9
     near_ma50 = abs(lo5 - row["ma50"]) / row["ma50"] if row["ma50"] > 0 else 9.9
-    near_support = min(near_ma20, near_ma50)
-    # RSI 近 5 日是否曾超賣
+    # RSI 近 5 日最低 (短線是否降溫)
     rsi_min5 = df["rsi14"].iloc[max(0, i - 4):i + 1].min()
     # 反轉 K: 今日收紅且收盤收復前一日高點 (買在反彈確認)
     prev = df.iloc[i - 1]
     reversal = row["close"] > row["open"] and row["close"] > prev["high"]
+    # 回檔量縮: 近 3 日均量 < 50 日均量 (賣壓乾涸)
+    vol3 = df["volume"].iloc[max(0, i - 2):i + 1].mean()
+    dryup = vol3 < row["vol_ma50"] if row["vol_ma50"] > 0 else False
+    # MA20 上升 (回檔發生在上升結構中)
+    ma20_up = i >= 5 and row["ma20"] > df["ma20"].iloc[i - 5]
     return {
-        "rank":        rs_rank,
-        "pullback":    pullback,
-        "near_support": near_support,
-        "rsi_min5":    rsi_min5,
-        "reversal":    reversal,
+        "rank":      rs_rank,
+        "pullback":  pullback,
+        "near_ma20": near_ma20,
+        "near_ma50": near_ma50,
+        "rsi_min5":  rsi_min5,
+        "reversal":  reversal,
+        "dryup":     dryup,
+        "ma20_up":   ma20_up,
     }
 
 
@@ -455,27 +467,36 @@ def _e_signal(feat, cfg):
         return None
     if not (cfg["pullback_min"] <= feat["pullback"] <= cfg["pullback_max"]):
         return None
-    if feat["near_support"] > cfg["near_ma_pct"]:
+    # 回測支撐: 取 MA20 距離 (預設) 判斷
+    near = feat["near_ma20"] if cfg.get("support_ma", "ma20") == "ma20" else \
+        min(feat["near_ma20"], feat["near_ma50"])
+    if near > cfg["near_ma_pct"]:
         return None
     if feat["rsi_min5"] >= cfg["rsi_os"]:
         return None
     if not feat["reversal"]:
         return None
-    return {
-        "score":     feat["rank"],
-        "stop_pct":  cfg["stop_pct"],
-        "target_r":  cfg["target_r"],
-        "trail_atr": cfg["trail_atr"],
-        "max_hold":  cfg["max_hold"],
+    if cfg.get("require_dryup", True) and not feat["dryup"]:
+        return None
+    if cfg.get("require_ma20_up", True) and not feat["ma20_up"]:
+        return None
+    sig = {
+        "score":    feat["rank"],
+        "stop_pct": cfg["stop_pct"],
+        "target_r": cfg["target_r"],
+        "max_hold": cfg["max_hold"],
     }
+    if cfg.get("trail_atr", 0):
+        sig["trail_atr"] = cfg["trail_atr"]
+    return sig
 
 
 def signal_e(df, i, rs_rank=None):
     """強勢股回檔買進 (策略 E) — 與 C/D 低相關的互補策略.
 
-    在多頭領導股 (高 RS + 長多排列) 回檔到 MA20/MA50 支撐、RSI 超賣後出現
-    反轉 K 時進場 (買低), 與 C/D 的突破進場 (買高) 報酬來源互補.
-    出場較短線: 7% 停損 / 2.5R 停利 / 3×ATR 移動停損 / 最長 30 日.
+    在多頭領導股 (高 RS + 長多排列) 淺回檔到上升 MA20、量縮後出現反轉 K
+    時進場 (買低), 與 C/D 的突破進場 (買高) 報酬來源互補.
+    出場較短線: 7% 停損 / 2.0R 停利 / 最長 25 日.
     """
     return _e_signal(_e_features(df, i, rs_rank), E_CONFIG)
 

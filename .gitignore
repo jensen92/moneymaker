@@ -18,3 +18,5 @@ picks_c_monthly.csv
 # Telegram bot secrets
 .env
 _ret_cache.pkl
+optimize_e.pkl
+optimize_e_results.csv
