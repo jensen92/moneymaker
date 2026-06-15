@@ -29,6 +29,14 @@ def add_indicators(df):
     df["high252"] = df["high"].rolling(252).max()
     df["low252"] = df["low"].rolling(252).min()
     df["high20"] = df["high"].rolling(20).max()
+    # RSI(14) — Wilder 平滑, 供策略 E (回檔買進) 判斷超賣反彈
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    df["rsi14"] = 100 - 100 / (1 + rs)
     return df
 
 
@@ -378,4 +386,98 @@ def signal_d(df, i, rs_rank=None):
 
 
 
-STRATEGIES = {"A": signal_a, "C": signal_c, "D": signal_d}
+# ─────────────────────────────────────────────────────────────
+# 策略 E — 強勢股回檔買進 (low-correlation 互補, 與 C/D 報酬來源不同)
+# ─────────────────────────────────────────────────────────────
+# 設計理念: C/D 在「突破創新高」進場 (買高); E 在「多頭股回檔到支撐反彈」進場
+# (買低). 觸發日與 C/D 幾乎不重疊 → 與 C/D 報酬流低相關, 提供分散效益.
+#   進場: 長多排列 + 高 RS + 近期自高點回檔 8~25% + 回測 MA20/MA50 支撐
+#         + RSI(14) 曾超賣 (<40) 後出現反轉 K (收紅且收復前日高).
+#   出場: 較短線 (mean-reversion 性質) — 停損 / 2.5R 停利 / ATR 移動停損 / 最長持有.
+#         非 minervini 模式 (不套 MA50 全出與 +20% 賣半).
+E_CONFIG = {
+    "rs_min":        0.75,   # RS 門檻 (玩多頭領導股)
+    "pullback_min":  0.08,   # 自近 40 日高至少回檔 8% (要有回檔才買)
+    "pullback_max":  0.25,   # 回檔不超過 25% (超過視為轉弱)
+    "near_ma_pct":   0.04,   # 近 5 日最低觸及 MA20 或 MA50 ±4% (回測支撐)
+    "rsi_os":        40.0,   # RSI(14) 曾 < 40 (短線超賣)
+    "stop_pct":      0.07,   # 停損 7% (回檔買進, 支撐失守即止損)
+    "target_r":      2.5,    # 停利 2.5R (mean-reversion 較快了結)
+    "trail_atr":     3.0,    # ATR 移動停損 (讓部分單能續抱)
+    "max_hold":      30,     # 最長持有 30 日 (短於 C/D)
+}
+
+
+def _e_features(df, i, rs_rank):
+    """抽取策略 E 所需原始特徵 (長多排列 + 回檔/支撐/超賣), 不符回傳 None."""
+    row = df.iloc[i]
+    if np.isnan(row["ma200"]) or np.isnan(row["rsi14"]) or row["close"] < 10:
+        return None
+    if row["volume"] * row["close"] < 50_000_000:
+        return None
+    if i < 200:
+        return None
+    # 長多排列 (與 C/D 同樣只玩多頭股, 確保品質)
+    uptrend = (
+        row["ma50"] > row["ma150"] > row["ma200"]
+        and row["ma200"] > df["ma200"].iloc[i - 21]
+        and row["close"] > row["ma200"]
+    )
+    if not uptrend:
+        return None
+    # 自近 40 日高點的回檔幅度
+    hi40 = df["high"].iloc[max(0, i - 39):i + 1].max()
+    pullback = (hi40 - row["close"]) / hi40 if hi40 > 0 else 0.0
+    # 近 5 日最低是否回測 MA20 / MA50 支撐
+    lo5 = df["low"].iloc[max(0, i - 4):i + 1].min()
+    near_ma20 = abs(lo5 - row["ma20"]) / row["ma20"] if row["ma20"] > 0 else 9.9
+    near_ma50 = abs(lo5 - row["ma50"]) / row["ma50"] if row["ma50"] > 0 else 9.9
+    near_support = min(near_ma20, near_ma50)
+    # RSI 近 5 日是否曾超賣
+    rsi_min5 = df["rsi14"].iloc[max(0, i - 4):i + 1].min()
+    # 反轉 K: 今日收紅且收盤收復前一日高點 (買在反彈確認)
+    prev = df.iloc[i - 1]
+    reversal = row["close"] > row["open"] and row["close"] > prev["high"]
+    return {
+        "rank":        rs_rank,
+        "pullback":    pullback,
+        "near_support": near_support,
+        "rsi_min5":    rsi_min5,
+        "reversal":    reversal,
+    }
+
+
+def _e_signal(feat, cfg):
+    """套用 cfg 門檻判定策略 E 訊號, 回傳訊號字典或 None."""
+    if feat is None:
+        return None
+    if feat["rank"] is None or feat["rank"] < cfg["rs_min"]:
+        return None
+    if not (cfg["pullback_min"] <= feat["pullback"] <= cfg["pullback_max"]):
+        return None
+    if feat["near_support"] > cfg["near_ma_pct"]:
+        return None
+    if feat["rsi_min5"] >= cfg["rsi_os"]:
+        return None
+    if not feat["reversal"]:
+        return None
+    return {
+        "score":     feat["rank"],
+        "stop_pct":  cfg["stop_pct"],
+        "target_r":  cfg["target_r"],
+        "trail_atr": cfg["trail_atr"],
+        "max_hold":  cfg["max_hold"],
+    }
+
+
+def signal_e(df, i, rs_rank=None):
+    """強勢股回檔買進 (策略 E) — 與 C/D 低相關的互補策略.
+
+    在多頭領導股 (高 RS + 長多排列) 回檔到 MA20/MA50 支撐、RSI 超賣後出現
+    反轉 K 時進場 (買低), 與 C/D 的突破進場 (買高) 報酬來源互補.
+    出場較短線: 7% 停損 / 2.5R 停利 / 3×ATR 移動停損 / 最長 30 日.
+    """
+    return _e_signal(_e_features(df, i, rs_rank), E_CONFIG)
+
+
+STRATEGIES = {"A": signal_a, "C": signal_c, "D": signal_d, "E": signal_e}
