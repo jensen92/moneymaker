@@ -279,8 +279,10 @@ C_CONFIG = {
     "gain_cap":        9.99,  # 不限突破日漲幅 (C 的特色, 與 D 區隔)
     "contraction":     0.80,  # ATR5/ATR14 收縮門檻
     "vol_mult":        1.5,   # 突破日量 / 50日均量 門檻
-    "three_week_gain": 0.20,  # 三週法則 (沿用引擎預設值)
-    "max_hold":        90,
+    # ── 書中(Minervini)出場心法: 總是 +20% 賣半鎖利, 不設時間出場 ──
+    "use_three_week":  False,  # 關閉三週法則 → 達 +20% 一律賣半 (書中「賣半雙贏」)
+    "three_week_gain": 0.20,  # (僅 use_three_week=True 時生效)
+    "max_hold":        9999,  # 取消硬性持有上限, 改由 MA50 移動停損/衝頂/停損決定出場
 }
 
 
@@ -305,8 +307,10 @@ D_CONFIG = {
     "gain_cap":        0.08,  # 突破日漲幅上限 (收緊到 8%, 不追過熱突破)
     "contraction":     0.80,  # ATR5/ATR14 收縮門檻 (越小越嚴)
     "vol_mult":        1.5,   # 突破日量 / 50日均量 門檻
-    "three_week_gain": 0.25,  # 三週法則: N日內漲幅 >= 此值即讓利潤奔跑
-    "max_hold":        120,   # 最長持有 (拉長讓主升段奔跑)
+    # ── 書中(Minervini)出場心法: 總是 +20% 賣半鎖利, 不設時間出場 ──
+    "use_three_week":  False,  # 關閉三週法則 → 達 +20% 一律賣半 (書中「賣半雙贏」)
+    "three_week_gain": 0.25,  # (僅 use_three_week=True 時生效)
+    "max_hold":        9999,  # 取消硬性持有上限, 改由 MA50 移動停損/衝頂/停損決定出場
 }
 
 
@@ -363,6 +367,7 @@ def _d_signal(feat, cfg):
         "score":           feat["rank"],
         "minervini":       True,
         "stop_pct":        cfg["stop_pct"],
+        "use_three_week":  cfg.get("use_three_week", False),
         "three_week_gain": cfg["three_week_gain"],
         "max_hold":        cfg["max_hold"],
     }

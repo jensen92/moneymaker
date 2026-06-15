@@ -289,8 +289,10 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                     days_held = di - p["entry_idx"]
                     init_entry = p.get("init_entry", p["entry"])
                     tw_gain = p.get("three_week_gain", THREE_WEEK_GAIN)
-                    # 三週法則: 突破後 N 日內漲 >= G → 跳過賣半, 讓強勢股自由奔跑
-                    if not p["three_week_hold"] and days_held <= THREE_WEEK_DAYS:
+                    # 三週法則 (預設關閉, 書中主張總是賣半鎖利): 僅 use_three_week 時啟用,
+                    # 突破後 N 日內漲 >= G → 跳過賣半, 讓強勢股自由奔跑
+                    if (p.get("use_three_week") and not p["three_week_hold"]
+                            and days_held <= THREE_WEEK_DAYS):
                         if row["high"] >= init_entry * (1 + tw_gain):
                             p["three_week_hold"] = True
                             # 不改 expire_idx, 只取消 +20% 賣半動作
@@ -459,6 +461,7 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                     "pyramid_adds": pyramid_adds,
                     "half_sold": False,
                     "three_week_hold": False,  # 三週法則旗標
+                    "use_three_week": s.get("use_three_week", False),  # 書中預設關閉(總是賣半)
                     "three_week_gain": s.get("three_week_gain", THREE_WEEK_GAIN),
                     "climax_exit":       s.get("climax_exit", False),
                     "climax_sprint_pct": s.get("climax_sprint_pct", 0.25),
