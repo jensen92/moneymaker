@@ -644,5 +644,127 @@ def signal_g(df, i, rs_rank=None):
     }
 
 
+# ─────────────────────────────────────────────────────────────
+# 策略 H — 上升三角形突破 (Edwards & Magee《股價趨勢技術分析》)
+# ─────────────────────────────────────────────────────────────
+# 設計理念: R.D. Edwards & John Magee, "Technical Analysis of Stock Trends".
+#   上升三角形 (Ascending Triangle) 是該書最可靠的多頭續勢/累積型態:
+#     - 上方「水平壓力線」: 多次觸及同一高點區 (供給帶), 反覆被壓回
+#     - 下方「上升支撐線」: 一波比一波高的低點 (需求逐步增強)
+#     - 兩線收斂, 最終價格「向上突破水平壓力 + 放量」→ 進場
+#   與 C/D (VCP 對稱波動收縮) 的差異:
+#     * VCP 兩側都收斂; 上升三角是「上平下升」單向收斂 (頂部水平)
+#     * 偵測用「壓力線觸及次數 + 低點線性回歸正斜率」, 而非波段收縮比
+#   停損: 跌破上升支撐線 (回歸線在當日之值) 下方, 或固定 stop_pct 取較緊者.
+#   出場: 量度目標常為三角高度, 但本引擎讓利潤奔跑 (gain_cap 大), 最長 90 日.
+H_CONFIG = {
+    "window":        40,    # 三角型態回顧窗口
+    "min_touches":    3,    # 水平壓力線最少觸及次數
+    "touch_tol":     0.03,  # 觸及壓力線的容差 (3% 內視為同一帶)
+    "min_slope":     0.0,   # 低點回歸線最小斜率 (>0 = 上升)
+    "max_height":    0.30,  # 三角高度上限 (壓力-起始低點)/壓力
+    "min_height":    0.05,  # 三角高度下限
+    "vol_mult":      1.3,   # 突破量 > vol_ma50 × 1.3
+    "rs_min":        0.70,  # RS 排名下限
+    "stop_pct":      0.08,  # 固定停損上限
+    "gain_cap":      9.99,  # 讓利潤奔跑
+    "max_hold":      90,    # 最長持有 90 日
+    "min_price":     10.0,
+}
+
+
+def _ascending_triangle(df, i, cfg):
+    """偵測 [i-window, i) 是否形成上升三角, 並於今日 i 向上突破水平壓力.
+
+    回傳 (resistance, support_today) 或 None.
+    resistance = 水平壓力位; support_today = 上升支撐線在今日的值 (停損參考).
+    """
+    w = cfg["window"]
+    if i < w + 5:
+        return None
+    seg = df.iloc[i - w:i]
+    highs = seg["high"].values
+    lows = seg["low"].values
+    n = len(highs)
+
+    # 1. 水平壓力線: 取區間最高價為壓力帶上緣
+    resistance = highs.max()
+    # 觸及次數: 高點落在壓力帶 (resistance × (1-tol)) 以上
+    touch_band = resistance * (1 - cfg["touch_tol"])
+    touches = int((highs >= touch_band).sum())
+    if touches < cfg["min_touches"]:
+        return None
+
+    # 2. 上升支撐線: 對「低點序列」做線性回歸, 斜率須 > min_slope
+    x = np.arange(n, dtype=float)
+    slope, intercept = np.polyfit(x, lows, 1)
+    if slope <= cfg["min_slope"]:
+        return None
+    # 低點需大致貼合回歸線 (殘差小), 確認確為趨勢線而非雜訊
+    fitted = slope * x + intercept
+    rmse = float(np.sqrt(np.mean((lows - fitted) ** 2)))
+    if rmse / resistance > 0.05:   # 殘差 > 5% 視為不成形
+        return None
+
+    # 3. 三角高度檢查 (壓力 - 起始支撐) / 壓力
+    support_start = slope * 0 + intercept
+    height = (resistance - support_start) / resistance
+    if height < cfg["min_height"] or height > cfg["max_height"]:
+        return None
+
+    # 支撐線在「今日 (x=n)」的延伸值, 作為停損參考
+    support_today = slope * n + intercept
+    return resistance, support_today
+
+
+def signal_h(df, i, rs_rank=None):
+    """上升三角形突破 (策略 H) — Edwards & Magee.
+
+    進場條件:
+      1. RS 排名 >= rs_min
+      2. [i-window, i) 形成上升三角 (水平壓力 + 上升支撐, 收斂)
+      3. 今日收盤向上突破水平壓力線
+      4. 突破量 > vol_ma50 × vol_mult
+    停損: 跌破上升支撐線延伸值, 或固定 stop_pct, 取較緊者 (下限 3%).
+    """
+    cfg = H_CONFIG
+    if i < cfg["window"] + 5:
+        return None
+    if rs_rank is None or np.isnan(rs_rank) or rs_rank < cfg["rs_min"]:
+        return None
+    row = df.iloc[i]
+    if row["close"] < cfg["min_price"]:
+        return None
+    vol_ma50 = row.get("vol_ma50", float("nan"))
+    if np.isnan(vol_ma50) or vol_ma50 <= 0:
+        return None
+    if row["volume"] < vol_ma50 * cfg["vol_mult"]:
+        return None
+
+    tri = _ascending_triangle(df, i, cfg)
+    if tri is None:
+        return None
+    resistance, support_today = tri
+
+    # 今日收盤突破水平壓力
+    if row["close"] <= resistance:
+        return None
+    # 突破不可過度延伸 (距壓力 > 8% 視為追高)
+    if (row["close"] - resistance) / resistance > 0.08:
+        return None
+
+    # 停損: 支撐線延伸值 vs 固定停損, 取較緊
+    stop_from_support = (row["close"] - support_today) / row["close"]
+    stop_pct = min(stop_from_support, cfg["stop_pct"])
+    stop_pct = max(stop_pct, 0.03)
+
+    return {
+        "score":    rs_rank,
+        "stop_pct": stop_pct,
+        "gain_cap": cfg["gain_cap"],
+        "max_hold": cfg["max_hold"],
+    }
+
+
 STRATEGIES = {"A": signal_a, "C": signal_c, "D": signal_d, "E": signal_e,
-              "F": signal_f, "G": signal_g}
+              "F": signal_f, "G": signal_g, "H": signal_h}
