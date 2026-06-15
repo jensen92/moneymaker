@@ -63,6 +63,10 @@ def signal(df, cfg):
         parts.append(np.sign(df["ma50"] - df["ma100"]).fillna(0.0))
     if "mom" in cfg["signals"]:
         parts.append(np.sign(df["mom"]).fillna(0.0))
+    if "season" in cfg["signals"]:              # 穀物季節性: 12-4 月偏多
+        mth = c.index.month
+        parts.append(pd.Series(np.where(np.isin(mth, [12, 1, 2, 3, 4]), 1.0, 0.0),
+                               index=c.index))
     sig = sum(parts) / len(parts)
     if not cfg["allow_short"]:
         sig = sig.clip(lower=0.0)
@@ -84,13 +88,14 @@ def contracts(df, cfg, n_mkt):
     return (pm_daily_vol / atr_usd).clip(upper=200).fillna(0.0)
 
 
-def backtest(cfg, start=None, end=None):
-    syms = list(SPECS)
+def backtest(cfg, start=None, end=None, specs=None):
+    specs = specs or SPECS
+    syms = list(specs)
     pnl_cols = {}
     pos_cols = {}
     for sym in syms:
         df = load(sym)
-        sp = SPECS[sym]
+        sp = specs[sym]
         cfg = {**cfg, "pv": sp["pv"]}
         sig = signal(df, cfg)
         ct = contracts(df, cfg, len(syms))
