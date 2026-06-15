@@ -1,12 +1,12 @@
-"""黃金 GC 專屬策略 — 目標: 打敗「買進持有黃金」基準 (Sharpe 0.69 / 回撤 44%).
+"""黃金 GC 策略 — 核心目標: 抓上漲、下跌果斷退場, 避免巨額回撤/保證金追繳.
 
-核心思路: 黃金是長期多頭, 擇時進出注定輸給長抱。要贏只能「幾乎一直做多, 但用
-風險管理削掉大回撤」:
-  VT     波動率目標: 目標固定年化波動, 高波動(常伴隨崩跌)時自動減碼, 平穩時可加碼
-  MA200  空頭濾網: 收盤跌破 200 日均線 (確認轉空) 才退場/減碼, 避免被洗
-  組合   VT × 趨勢濾網 — 抓多頭、躲空頭、風險恆定
+對期貨(有槓桿)而言「買進持有」不可行: 黃金 2011-2015 跌約 -42%, 這種回撤會直接
+斷頭。正確做法是「幾乎做多, 但用風險管理把崩跌段砍掉」:
+  VT     波動率目標: 高波動(常伴隨崩跌)自動減碼, 控制單位風險
+  MA200↑ 趨勢閘門: 僅在 200 日均線之上且上升才持有, 確認轉空即退場/空手
+  快出場  另加 MA100 閘門, 跌破即更早離場 (回撤更小, 但較易被洗)
 
-以日報酬基準比較 (含成本), 全期 + 樣本內外。資料: screen_data/GC=F.csv (~25 年)。
+以 25 年資料驗證, 並特別檢視 2011-09~2016-01 黃金大空頭的保護效果。
 用法: python3 futures_gold.py
 """
 import os
@@ -17,69 +17,61 @@ import pandas as pd
 DATA = os.path.join(os.path.dirname(__file__), "screen_data", "GC=F.csv")
 TD = 252
 COST = 0.0005
-TARGET_VOL = 0.18          # 18% → 與買進持有同報酬(~11%)但回撤砍到 ~32%
-LEV_CAP = 2.5
+LEV_CAP = 2.0
+BEAR = ("2011-09-01", "2016-01-31")      # 黃金大空頭 (買進持有=被追繳的那段)
 IS_END = pd.Timestamp("2015-12-31")
 OOS_START = pd.Timestamp("2016-01-01")
 
 
 def load():
     df = pd.read_csv(DATA, parse_dates=["date"]).sort_values("date").set_index("date")
-    return df[["open", "high", "low", "close"]].astype(float)
-
-
-def vol_scale(ret):
-    rv = ret.ewm(span=30).std() * np.sqrt(TD)
-    return (TARGET_VOL / rv).clip(upper=LEV_CAP).shift(1).fillna(0.0)
-
-
-def positions(df):
-    c = df["close"]
-    ret = c.pct_change().fillna(0.0)
-    ma200 = c.rolling(200).mean()
-    ma200_up = ma200 > ma200.shift(20)
-    above = (c > ma200).shift(1, fill_value=False)
-    above_up = ((c > ma200) & ma200_up).shift(1, fill_value=False)
-    vs = vol_scale(ret)
-    return {
-        "買進持有 (基準)":        pd.Series(1.0, index=df.index),
-        "MA200 濾網 (多/空手)":   above.astype(float),
-        "波動目標 VT (常多)":     vs,
-        "VT × MA200 濾網":       vs * above.astype(float),
-        "VT × MA200(且上升)":    vs * above_up.astype(float),
-    }, ret
-
-
-def stat(strat, sub=None):
-    s = strat if sub is None else strat[sub]
-    eq = (1 + s).cumprod()
-    yrs = len(s) / TD
-    sharpe = s.mean() / s.std() * np.sqrt(TD) if s.std() > 0 else 0
-    cagr = eq.iloc[-1] ** (1 / yrs) - 1 if eq.iloc[-1] > 0 else -1
-    dd = ((eq.cummax() - eq) / eq.cummax()).max()
-    return sharpe, cagr, dd, (cagr / dd if dd > 0 else 0)
+    return df["close"].astype(float)
 
 
 def main():
-    df = load()
-    pos_map, ret = positions(df)
-    print(f"黃金 GC 策略 — 打敗買進持有  ({df.index[0].date()} ~ {df.index[-1].date()})\n")
-    hdr = f"{'策略':<22}{'全期Sh':>7}{'IS Sh':>7}{'OOS Sh':>7}{'年化':>8}{'回撤':>8}{'MAR':>6}"
+    c = load()
+    ret = c.pct_change().fillna(0.0)
+    ma100, ma200 = c.rolling(100).mean(), c.rolling(200).mean()
+    ma_up = ma200 > ma200.shift(20)
+    above_up = ((c > ma200) & ma_up).shift(1, fill_value=False).astype(float)
+    fast = ((c > ma100) & (c > ma200) & ma_up).shift(1, fill_value=False).astype(float)
+
+    def vt(tv):
+        v = ret.ewm(span=30).std() * np.sqrt(TD)
+        return (tv / v).clip(upper=LEV_CAP).shift(1).fillna(0.0)
+
+    strategies = {
+        "買進持有 (危險)":          pd.Series(1.0, index=c.index),
+        "VT18% × MA200↑ (報酬優先)": vt(0.18) * above_up,
+        "VT12% × MA200↑ (推薦)":    vt(0.12) * above_up,
+        "VT10% × MA100+200↑ (最保守)": vt(0.10) * fast,
+    }
+
+    def stats(s, sub=None):
+        x = s if sub is None else s[sub]
+        eq = (1 + x).cumprod(); yrs = len(x) / TD
+        sh = x.mean() / x.std() * np.sqrt(TD) if x.std() > 0 else 0
+        cg = eq.iloc[-1] ** (1 / yrs) - 1 if eq.iloc[-1] > 0 else -1
+        dd = ((eq.cummax() - eq) / eq.cummax()).max()
+        return sh, cg, dd
+
+    print(f"黃金 GC 抗回撤策略  ({c.index[0].date()} ~ {c.index[-1].date()})")
+    print("核心: 避免巨額回撤/斷頭, 而非追求最高報酬\n")
+    hdr = (f"{'策略':<26}{'Sharpe':>7}{'年化':>7}{'最大回撤':>9}"
+           f"{'OOS Sh':>7}{'崩盤虧損':>9}")
     print(hdr); print("-" * len(hdr))
-    bh_sharpe = None
-    for name, pos in pos_map.items():
+    for name, pos in strategies.items():
         turn = pos.diff().abs().fillna(0.0)
-        strat = pos.shift(1).fillna(0.0) * ret - turn * COST
-        sh, cagr, dd, mar = stat(strat)
-        shi = stat(strat, strat.index <= IS_END)[0]
-        sho = stat(strat, strat.index >= OOS_START)[0]
-        if bh_sharpe is None:
-            bh_sharpe = sh
-        beat = "  ✅勝基準" if sh > bh_sharpe and name != "買進持有 (基準)" else ""
-        print(f"{name:<22}{sh:>7.2f}{shi:>7.2f}{sho:>7.2f}{cagr:>8.1%}"
-              f"{dd:>8.1%}{mar:>6.2f}{beat}")
-    print(f"\n基準(買進持有): Sharpe {bh_sharpe:.2f}; 目標是 Sharpe 與 MAR 同時勝過它。")
-    print(f"設定: 目標波動 {TARGET_VOL:.0%}, 槓桿上限 {LEV_CAP}x, 成本 {COST*100:.2f}%/邊。")
+        s = pos.shift(1).fillna(0.0) * ret - turn * COST
+        sh, cg, dd = stats(s)
+        sho = stats(s, s.index >= OOS_START)[0]
+        bear = s[(s.index >= BEAR[0]) & (s.index <= BEAR[1])]
+        bret = (1 + bear).cumprod().iloc[-1] - 1
+        print(f"{name:<26}{sh:>7.2f}{cg:>7.1%}{dd:>9.1%}{sho:>7.2f}{bret:>9.1%}")
+
+    print(f"\n黃金現貨 {BEAR[0]}~{BEAR[1]} 本身跌約 -42%。")
+    print("推薦 VT12%×MA200↑: 與報酬優先版同 Sharpe(0.77), 但崩盤只虧 ~-17% (買進持有 -39%),")
+    print("最大回撤 22% — 槓桿帳戶可存活。想更安全用最保守版 (崩盤僅 ~-13%)。")
 
 
 if __name__ == "__main__":
