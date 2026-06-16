@@ -1,4 +1,4 @@
-"""GitHub Actions 每日選股腳本: PA + PB + D 三策略掃描, 結果發 Telegram + 存 picks/.
+"""GitHub Actions 每日選股腳本: PA + PB + D + C 四策略掃描 + 近觸發觀察名單.
 
 環境變數:
   TELEGRAM_BOT_TOKEN  Telegram bot token
@@ -23,12 +23,12 @@ DATA_DIR = os.environ.get("MM_DATA_DIR",
 bt.DATA_DIR = DATA_DIR
 
 from backtest import load_regime, INIT_CAPITAL, RISK_PCT, PICKS_PER_DAY, compute_rs_rank
-from strategies import STRATEGIES, add_indicators
+from strategies import STRATEGIES, add_indicators, _d_features
 
 # .strip() 防止 Secret 值前後夾帶空白/tab 導致 Telegram API 拒絕
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-SCAN_KEYS = ["PA", "PB", "D"]
+SCAN_KEYS = ["PA", "PB", "D", "C"]
 PICKS_DIR = Path(__file__).parent / "picks"
 PICKS_DIR.mkdir(exist_ok=True)
 
@@ -43,7 +43,6 @@ def send_telegram(text):
             r = requests.post(url, json={"chat_id": CHAT_ID, "text": chunk,
                                          "parse_mode": "HTML"}, timeout=15)
             if not r.ok:
-                # 印出 Telegram 回傳的錯誤 (不含敏感資訊) 方便診斷
                 print(f"[Telegram] API 錯誤 {r.status_code}: {r.text[:300]}")
         except Exception as e:
             print(f"[Telegram] 發送失敗: {e}")
@@ -86,6 +85,58 @@ def load_all_data():
     return all_data, names
 
 
+def _build_watchlist(all_data, names, rs, latest_date):
+    """找出通過趨勢模板、RS > 0.75，但收縮尚未達標 (0.80–0.85) 的股票."""
+    WATCH_RS = 0.75
+    WATCH_CONTRACTION = 0.85
+
+    candidates = []
+    for code, df in all_data.items():
+        i = len(df) - 1
+        d = df["date"].iloc[i]
+        if latest_date and d < latest_date:
+            continue
+        try:
+            rk = rs.at[d, code]
+        except KeyError:
+            continue
+        if rk is None or (isinstance(rk, float) and np.isnan(rk)):
+            continue
+        if rk < WATCH_RS:
+            continue
+
+        feat = _d_features(df, i, rk)
+        if feat is None:
+            continue
+
+        # 已有任一策略訊號 → 已在主清單，不重複列入
+        already = any(STRATEGIES[k](df, i, rs_rank=rk) for k in SCAN_KEYS)
+        if already:
+            continue
+
+        ctr = feat["contraction"]
+        if ctr > WATCH_CONTRACTION:
+            continue
+
+        row = df.iloc[i]
+        prior_high20 = df["high"].iloc[i - 20: i].max()
+        near_breakout = row["close"] >= prior_high20 * 0.95
+
+        candidates.append({
+            "code":        code,
+            "name":        names.get(code, ""),
+            "rs":          rk,
+            "contraction": ctr,
+            "threshold":   0.80,
+            "vol_surge":   feat["vol_surge"],
+            "breakout":    feat["breakout"],
+            "near_bo":     near_breakout,
+        })
+
+    candidates.sort(key=lambda x: (-int(x["near_bo"]), -x["rs"]))
+    return candidates[:10]
+
+
 def main():
     print(f"=== 每日選股掃描 {datetime.now():%Y-%m-%d %H:%M} ===")
 
@@ -125,7 +176,8 @@ def main():
 
     label = {"PA": "PA 最嚴 (PF3.4/勝率57%)",
              "PB": "PB 平衡 (PF2.5/勝率51%)",
-             "D":  "D  原版 (PF2.0/勝率53%)"}
+             "D":  "D  原版 (PF2.0/勝率53%)",
+             "C":  "C  寬鬆 (PF1.8/勝率46%)"}
 
     for key in SCAN_KEYS:
         lines.append(f"<b>【策略 {label[key]}】</b>")
@@ -155,6 +207,22 @@ def main():
                 f"    最長持有: {s['max_hold']} 日  出場: {gain_str}"
             )
         lines.append("")
+
+    # ── 近觸發觀察名單 ──
+    watchlist = _build_watchlist(all_data, names, rs, latest_date)
+    lines.append("<b>【近觸發觀察名單】</b>  (模板✅ 收縮未達但 RS &gt; 0.75)")
+    if not regime_ok:
+        lines.append("  大盤偏弱，僅供參考")
+    if watchlist:
+        for w in watchlist[:8]:
+            lines.append(
+                f"  <b>{w['code']} {w['name']}</b>  RS:{w['rs']:.2f}\n"
+                f"    收縮:{w['contraction']:.3f}(需&lt;{w['threshold']:.2f})  "
+                f"量比:{w['vol_surge']:.1f}x  突破:{'✅' if w['breakout'] else '❌'}"
+            )
+    else:
+        lines.append("  (今日無近觸發候選)")
+    lines.append("")
 
     lines.append("─" * 30)
     lines.append("⚠️ 以上為量化訊號, 僅供參考, 請自行評估風險。")
