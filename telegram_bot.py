@@ -9,7 +9,7 @@
     export MM_DATA_DIR="/Users/jensenchen/money maker/adjusted_data"
 
 指令:
-    /picks              今日 C / D 選股
+    /picks              今日選股 (PA/PB/D/C)
     /analyze 2330       分析個股現況 + 進出場價格 (自動更新資料)
     /backtest [C,D]     組合回測 (慢, 數分鐘)
     /status             機器人 / 資料狀態
@@ -395,7 +395,7 @@ def analyze_job(chat_id, code):
 
 # ── 全市場掃描 (符合 C / D 的清單) ──────────────────────────────────────────
 
-SCAN_KEYS = ["PA", "PB", "D"]   # 與 GitHub Actions 每日報告一致
+SCAN_KEYS = ["PA", "PB", "D", "C"]   # 與 GitHub Actions 每日報告一致
 
 
 def _scan_all(progress=None, keys=None):
@@ -757,8 +757,7 @@ def handle(chat_id, text):
              if DATA_DIR and os.path.isdir(DATA_DIR) else "?")
         send(chat_id, f"🟢 機器人運作中\n資料夾: {dd}\n股票數: {n}")
     elif cmd == "picks":
-        threading.Thread(target=heavy_job,
-                         args=(chat_id, "今日選股", ["daily_picks.py"]),
+        threading.Thread(target=scan_job, args=(chat_id,),
                          daemon=True).start()
     elif cmd == "backtest":
         strats = args[0] if args else "C,D"
