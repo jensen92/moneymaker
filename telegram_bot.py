@@ -733,12 +733,23 @@ def _status_text():
     return f"🟢 機器人運作中\n資料夾: {dd}\n股票數: {n}"
 
 
+def _refresh_data():
+    """增量更新全市場股價資料 (供每日掃描使用); 僅在 MM_AUTO_DOWNLOAD=1 時呼叫."""
+    try:
+        subprocess.run(["python3", "download_all.py"], cwd=HERE,
+                       env=dict(os.environ), capture_output=True,
+                       text=True, timeout=3600)
+    except Exception as e:  # noqa: BLE001
+        print("資料更新失敗:", e)
+
+
 def scheduler_loop():
     """每天 08:00 (本機時間) 自動全市場掃描並推播給授權使用者."""
     if not ALLOWED_CHAT:
         print("未設定 TELEGRAM_CHAT_ID, 略過每日排程")
         return
     import datetime as dt
+    auto_dl = os.environ.get("MM_AUTO_DOWNLOAD") == "1"
     while True:
         now = dt.datetime.now()
         nxt = now.replace(hour=8, minute=0, second=0, microsecond=0)
@@ -748,6 +759,9 @@ def scheduler_loop():
         print(f"下次自動掃描: {nxt:%Y-%m-%d %H:%M}")
         time.sleep(wait)
         try:
+            if auto_dl:
+                send(ALLOWED_CHAT, "🌅 每日更新股價資料中 (增量)...")
+                _refresh_data()
             send(ALLOWED_CHAT, "🌅 每日 08:00 自動掃描")
             scan_job(ALLOWED_CHAT)
         except Exception as e:  # noqa: BLE001
