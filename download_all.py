@@ -93,8 +93,43 @@ def task(stock):
     return code, False
 
 
+def fetch_index():
+    """下載加權指數 ^TWII 至 _TWII.csv (大盤濾網用)。指數無需除權息調整。"""
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII"
+    for attempt in range(3):
+        try:
+            r = requests.get(url, params={"range": RANGE, "interval": "1d"},
+                             headers=HEADERS, timeout=30)
+            r.raise_for_status()
+            result = r.json()["chart"]["result"][0]
+            ts = result.get("timestamp")
+            if not ts:
+                return False
+            q = result["indicators"]["quote"][0]
+            rows = []
+            for i, t in enumerate(ts):
+                o, h, l, c = (q["open"][i], q["high"][i],
+                              q["low"][i], q["close"][i])
+                if None in (o, h, l, c):
+                    continue
+                rows.append((time.strftime("%Y-%m-%d", time.gmtime(t + 8 * 3600)),
+                             round(o, 2), round(h, 2), round(l, 2), round(c, 2), 0))
+            if not rows:
+                return False
+            with open(os.path.join(DATA_ADJ, "_TWII.csv"), "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["date", "open", "high", "low", "close", "volume"])
+                w.writerows(rows)
+            return True
+        except Exception:
+            time.sleep(2 ** attempt)
+    return False
+
+
 def main():
     os.makedirs(DATA_ADJ, exist_ok=True)
+    # 大盤指數每次都更新 (檔案小, 且選股當日一定要最新), 不走跳過邏輯
+    print("下載加權指數 _TWII.csv ...", "OK" if fetch_index() else "失敗")
     universe = get_universe()
     with open(UNIVERSE_FILE, "w") as f:
         json.dump(list(universe.values()), f, ensure_ascii=False, indent=1)
