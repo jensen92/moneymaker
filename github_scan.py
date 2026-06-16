@@ -25,8 +25,9 @@ bt.DATA_DIR = DATA_DIR
 from backtest import load_regime, INIT_CAPITAL, RISK_PCT, PICKS_PER_DAY, compute_rs_rank
 from strategies import STRATEGIES, add_indicators
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
+# .strip() 防止 Secret 值前後夾帶空白/tab 導致 Telegram API 拒絕
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 SCAN_KEYS = ["PA", "PB", "D"]
 PICKS_DIR = Path(__file__).parent / "picks"
 PICKS_DIR.mkdir(exist_ok=True)
@@ -39,8 +40,11 @@ def send_telegram(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     for chunk in _split(text, 4000):
         try:
-            requests.post(url, json={"chat_id": CHAT_ID, "text": chunk,
-                                     "parse_mode": "HTML"}, timeout=15)
+            r = requests.post(url, json={"chat_id": CHAT_ID, "text": chunk,
+                                         "parse_mode": "HTML"}, timeout=15)
+            if not r.ok:
+                # 印出 Telegram 回傳的錯誤 (不含敏感資訊) 方便診斷
+                print(f"[Telegram] API 錯誤 {r.status_code}: {r.text[:300]}")
         except Exception as e:
             print(f"[Telegram] 發送失敗: {e}")
         time.sleep(0.3)
