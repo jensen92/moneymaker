@@ -395,8 +395,13 @@ def analyze_job(chat_id, code):
 
 # ── 全市場掃描 (符合 C / D 的清單) ──────────────────────────────────────────
 
-def _scan_all(progress=None):
-    """掃全市場, 回傳符合策略 C 或 D 的清單 (標注雙符合 + 進出場點位)."""
+SCAN_KEYS = ["PA", "PB", "D"]   # 與 GitHub Actions 每日報告一致
+
+
+def _scan_all(progress=None, keys=None):
+    """掃全市場, 回傳符合任一策略的清單 (標注符合的策略 + 進出場點位)."""
+    keys = keys or SCAN_KEYS
+
     def note(msg):
         if progress:
             progress(msg)
@@ -470,18 +475,18 @@ def _scan_all(progress=None):
         eff_risk = RISK_PCT
         tier_str = "未知"
 
-    note("⏳ 套用策略 C / D...")
+    note(f"⏳ 套用策略 {'/'.join(keys)}...")
     matches = []
     for c, df in data.items():
         i = len(df) - 1
         rk = ranks.get(c)
         if rk is None or np.isnan(rk):
             continue
-        sigC = STRATEGIES["C"](df, i, rs_rank=rk)
-        sigD = STRATEGIES["D"](df, i, rs_rank=rk)
-        if not sigC and not sigD:
+        hit = [k for k in keys if STRATEGIES[k](df, i, rs_rank=rk)]
+        if not hit:
             continue
-        sig = sigD or sigC
+        # 取最嚴格策略的訊號 (keys 依嚴格度排序, 第一個命中即最嚴)
+        sig = next(STRATEGIES[k](df, i, rs_rank=rk) for k in keys if k in hit)
         close = df["close"].iloc[-1]
         stop_pct = sig.get("stop_pct", 0.08)
         stop = close * (1 - stop_pct)
@@ -489,25 +494,25 @@ def _scan_all(progress=None):
         risk_amt = INIT_CAPITAL * eff_risk
         shares = (int(risk_amt / risk_per_sh / 1000) * 1000
                   if risk_per_sh > 0 else 0)
-        tag = "CD" if (sigC and sigD) else ("C" if sigC else "D")
         matches.append({
-            "code": c, "name": names.get(c, ""), "tag": tag,
+            "code": c, "name": names.get(c, ""), "tag": "+".join(hit),
             "close": close, "stop": stop, "stop_pct": stop_pct,
             "shares": shares, "max_hold": sig["max_hold"], "rs": rk,
+            "nhit": len(hit),
         })
 
-    # 排序: 雙符合優先, 再依 RS 由高到低
-    order = {"CD": 0, "D": 1, "C": 2}
-    matches.sort(key=lambda m: (order[m["tag"]], -m["rs"]))
+    # 排序: 命中策略數多者優先, 再依 RS 由高到低
+    matches.sort(key=lambda m: (-m["nhit"], -m["rs"]))
 
     # 格式化
     if not matches:
-        return f"📋 全市場掃描 ({latest_d:%Y-%m-%d})\n大盤: {tier_str}\n\n今日無符合 C / D 的標的"
+        return (f"📋 全市場掃描 ({latest_d:%Y-%m-%d})\n大盤: {tier_str}\n\n"
+                f"今日無符合 {'/'.join(keys)} 的標的")
 
     lines = [
         f"📋 全市場掃描 ({latest_d:%Y-%m-%d})  大盤: {tier_str}",
-        f"符合標的: {len(matches)} 檔  (CD=雙符合)",
-        f"出場規則: 觸停損 或 跌破MA50 或 滿{matches[0]['max_hold']}日",
+        f"策略: {'/'.join(keys)}   符合標的: {len(matches)} 檔",
+        f"出場規則: 觸停損 或 跌破MA50 或 +20%賣半",
         "",
     ]
     for m in matches:
@@ -542,6 +547,121 @@ def scan_job(chat_id):
         _job_lock.release()
 
 
+# ── 本年度進出清單 ─────────────────────────────────────────────────────────
+
+def _year_trades(progress=None, keys=None):
+    """回測 PA/PB/D, 列出「今年進場」的交易 (含已出場與持有中)."""
+    keys = keys or SCAN_KEYS
+
+    def note(msg):
+        if progress:
+            progress(msg)
+
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import importlib
+    import datetime as dt
+    import pandas as pd
+    for mod in ["strategies", "backtest"]:
+        if mod in sys.modules:
+            importlib.reload(sys.modules[mod])
+    import backtest as bt
+    if DATA_DIR:
+        bt.DATA_DIR = DATA_DIR
+    from backtest import load_all, run
+
+    note("⏳ 載入全市場資料...")
+    data, names = load_all()
+
+    note(f"⏳ 回測 {'/'.join(keys)} (約 1-3 分)...")
+    all_trades, _, _ = run(data, names, leverage=1.0, strategies=tuple(keys))
+
+    year = dt.date.today().year
+    rows = [t for t in all_trades
+            if pd.Timestamp(t["entry_date"]).year == year]
+    rows.sort(key=lambda t: pd.Timestamp(t["entry_date"]))
+
+    if not rows:
+        return f"📅 {year} 年進出清單\n\n今年無任何進場交易 ({'/'.join(keys)})"
+
+    # 同一檔同一進場可能因分批賣出有多筆 trade, 彙總成「一個部位」
+    wins = sum(1 for t in rows if t["pnl"] > 0)
+    total_pnl = sum(t["pnl"] for t in rows)
+    lines = [
+        f"📅 {year} 年進出清單  ({'/'.join(keys)})",
+        f"交易筆數: {len(rows)}   勝率: {wins/len(rows):.0%}   "
+        f"損益合計: {total_pnl:+,.0f}",
+        "",
+    ]
+    for t in rows:
+        ed = pd.Timestamp(t["entry_date"]).strftime("%m/%d")
+        xd = pd.Timestamp(t["exit_date"]).strftime("%m/%d")
+        nm = names.get(t["code"], "")
+        ret_pct = (t["exit"] / t["entry"] - 1)
+        emoji = "🟢" if t["pnl"] > 0 else "🔴"
+        lines.append(
+            f"{emoji} {t['code']} {nm} [{t['strategy']}]\n"
+            f"   進 {ed} {t['entry']:.1f} → 出 {xd} {t['exit']:.1f}  "
+            f"({ret_pct:+.1%}, {t['r']:+.1f}R)")
+    lines.append("")
+    lines.append("註: 回測重現的歷史進出, 非即時持倉。+20%會自動賣半故同檔可能多筆。")
+    return "\n".join(lines)
+
+
+def year_trades_job(chat_id):
+    if not _job_lock.acquire(blocking=False):
+        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
+        return
+    try:
+        msg_id = send_get_id(chat_id, "⏳ 計算本年度進出清單中...")
+        state = {"last": 0.0}
+
+        def progress(text):
+            now = time.time()
+            if now - state["last"] >= 1.5:
+                state["last"] = now
+                edit(chat_id, msg_id, text)
+
+        result = _year_trades(progress=progress)
+        edit(chat_id, msg_id, "✅ 本年度進出清單完成")
+        send(chat_id, result)
+    except Exception as e:  # noqa: BLE001
+        send(chat_id, f"❌ 計算失敗: {e}")
+    finally:
+        _job_lock.release()
+
+
+# ── 策略設計說明 ───────────────────────────────────────────────────────────
+
+STRATEGY_DOC = (
+    "📖 策略設計方式 (PA / PB / D)\n"
+    "三者同源 Minervini SEPA 趨勢突破引擎, 差在「進場嚴格度」與「出場」。\n"
+    "\n"
+    "【核心邏輯 — 怎麼抓波段】\n"
+    "1. 趨勢模板 (第二階段): 收盤 > MA50 > MA150 > MA200, 且 MA200 向上,\n"
+    "   股價距 52 週高點 25% 內、距低點 25% 以上 → 只做「已經在主升段」的強勢股。\n"
+    "2. 相對強度 RS: 取近 126 日報酬全市場排名, 只挑前段班 (PA/PB RS≥85,\n"
+    "   D RS≥80) → 自動過濾出當下最強的族群 (AI / 記憶體 / 被動元件輪到誰強就抓誰)。\n"
+    "3. 量縮回檔 (VCP): 基底波動逐段收斂 + 量能枯竭, 等「洗盤結束」。\n"
+    "4. 樞紐突破進場: 帶量突破整理區上緣才進 → 不左側猜底, 只右側順勢。\n"
+    "\n"
+    "【進出場怎麼設計 — 不會抱上又抱下】\n"
+    "• 進場: 突破當下價, PA/PB 限定「距樞紐 6% 內」不追高 (gain_cap),\n"
+    "  避免追在波段尾端被巴。\n"
+    "• 初始停損: PA/PB/D 約 -8% (隨 VCP 末段低點), 一旦破線立刻認賠出場。\n"
+    "• 鎖利: +20% 自動「賣一半」落袋, 停損同步移到成本價 (之後最差打平)。\n"
+    "• 移動停損: 獲利 3R 後停損上移到成本; 之後改用 MA50 移動停損,\n"
+    "  讓利潤奔跑但「跌破 MA50 就全出」→ 這就是避免抱上又抱下的關鍵。\n"
+    "\n"
+    "【三檔差異】\n"
+    "• PA 最嚴 (PF3.5/勝率57%): 訊號少、最精準, 適合資金大、求穩。\n"
+    "• PB 平衡 (PF2.5/勝率51%): 訊號適中, 報酬與頻率折衷。\n"
+    "• D  原版 (PF2.0/勝率53%): 訊號最多, 機會多但需嚴守紀律。\n"
+    "\n"
+    "【大盤濾網】加權指數 < MA60 時全部停止進場, 空手避開系統性下跌。\n"
+)
+
+
 def scheduler_loop():
     """每天 08:00 (本機時間) 自動全市場掃描並推播給授權使用者."""
     if not ALLOWED_CHAT:
@@ -567,15 +687,54 @@ def scheduler_loop():
 # ── 指令路由 ───────────────────────────────────────────────────────────────
 
 HELP = (
-    "📈 策略機器人指令:\n"
-    "/scan               全市場掃描 C / D 清單 + 進出場點位\n"
-    "/picks              今日 C / D 選股 (各取前2)\n"
-    "/analyze 2330       個股分析 + 進出場價格\n"
-    "/backtest [C,D]     組合回測 (慢, 數分鐘)\n"
-    "/status             資料 / 機器人狀態\n"
-    "/help               顯示此說明\n"
+    "📈 策略機器人 — 點下方按鈕直接執行:\n"
+    "🔍 全市場掃描     PA/PB/D 符合清單 + 進出場點位\n"
+    "📅 本年度進出清單  今年回測進出交易 + 損益\n"
+    "📖 策略設計方式    PA/PB/D 設計與進出場邏輯\n"
+    "\n"
+    "也可打字: /analyze 2330 (個股分析)、/menu (叫出選單)\n"
     "(每日 08:00 自動全市場掃描並推播)"
 )
+
+# Telegram inline keyboard: callback_data 對應 handle_callback 的分支
+MENU_KEYBOARD = {
+    "inline_keyboard": [
+        [{"text": "🔍 全市場掃描", "callback_data": "scan"}],
+        [{"text": "📅 本年度進出清單", "callback_data": "year"}],
+        [{"text": "📖 策略設計方式", "callback_data": "doc"}],
+    ]
+}
+
+
+def send_menu(chat_id, text="請選擇功能 👇"):
+    try:
+        requests.post(f"{API}/sendMessage",
+                      json={"chat_id": chat_id, "text": text,
+                            "reply_markup": MENU_KEYBOARD}, timeout=30)
+    except requests.RequestException as e:
+        print("send_menu error:", e)
+
+
+def answer_callback(callback_id, text=""):
+    """回應 callback 讓 Telegram 按鈕的轉圈消失."""
+    try:
+        requests.post(f"{API}/answerCallbackQuery",
+                      data={"callback_query_id": callback_id, "text": text},
+                      timeout=15)
+    except requests.RequestException:
+        pass
+
+
+def handle_callback(chat_id, data):
+    """處理按鈕點擊 (callback_data)."""
+    if data == "scan":
+        threading.Thread(target=scan_job, args=(chat_id,), daemon=True).start()
+    elif data == "year":
+        threading.Thread(target=year_trades_job, args=(chat_id,),
+                         daemon=True).start()
+    elif data == "doc":
+        send(chat_id, STRATEGY_DOC)
+        send_menu(chat_id)
 
 
 def handle(chat_id, text):
@@ -583,8 +742,14 @@ def handle(chat_id, text):
     cmd = parts[0].lower().lstrip("/").split("@")[0] if parts else ""
     args = parts[1:]
 
-    if cmd in ("start", "help"):
+    if cmd in ("start", "help", "menu"):
         send(chat_id, f"你的 chat id: {chat_id}\n\n{HELP}")
+        send_menu(chat_id)
+    elif cmd == "year":
+        threading.Thread(target=year_trades_job, args=(chat_id,),
+                         daemon=True).start()
+    elif cmd == "doc":
+        send(chat_id, STRATEGY_DOC)
     elif cmd == "status":
         dd = DATA_DIR or "(未設定 MM_DATA_DIR)"
         n = (len([f for f in os.listdir(DATA_DIR)
@@ -619,12 +784,33 @@ def handle(chat_id, text):
 
 # ── 主迴圈 ─────────────────────────────────────────────────────────────────
 
+def ensure_data():
+    """雲端首次啟動時資料夾為空, 自動下載全市場資料 (含 _TWII)."""
+    data_dir = DATA_DIR or os.path.join(HERE, "data_adj")
+    csvs = ([f for f in os.listdir(data_dir)
+             if f.endswith(".csv") and not f.startswith("_")]
+            if os.path.isdir(data_dir) else [])
+    if len(csvs) >= 100:
+        print(f"資料已存在 ({len(csvs)} 檔), 略過下載")
+        return
+    print("資料夾為空, 開始下載全市場資料 (首次約數分鐘)...")
+    env = dict(os.environ)
+    env.setdefault("MM_DATA_DIR", data_dir)
+    subprocess.run(["python3", "download_all.py"], cwd=HERE, env=env)
+
+
 def main():
     if not TOKEN:
         raise SystemExit("請先設定環境變數 TELEGRAM_BOT_TOKEN")
+    # download_all.py 預設寫入 ./data_adj; 雲端未設 MM_DATA_DIR 時也指向它
+    if not DATA_DIR:
+        os.environ["MM_DATA_DIR"] = os.path.join(HERE, "data_adj")
+    ensure_data()
     print("策略機器人啟動, 等待指令... (Ctrl+C 結束)")
-    # 啟動每日 08:00 自動掃描排程
-    threading.Thread(target=scheduler_loop, daemon=True).start()
+    # 每日 08:00 自動掃描預設關閉 (GitHub Actions 已負責每日推播, 避免重複)。
+    # 若要改由本機器人推播, 設環境變數 BOT_DAILY_SCAN=1
+    if os.environ.get("BOT_DAILY_SCAN", "").strip() == "1":
+        threading.Thread(target=scheduler_loop, daemon=True).start()
     try:
         r0 = requests.get(f"{API}/getUpdates", params={"offset": -1}, timeout=10)
         updates0 = r0.json().get("result", [])
@@ -644,6 +830,19 @@ def main():
 
         for u in updates:
             offset = u["update_id"] + 1
+
+            # 按鈕點擊 (callback_query)
+            cq = u.get("callback_query")
+            if cq:
+                chat_id = str(cq["message"]["chat"]["id"])
+                answer_callback(cq["id"])
+                if ALLOWED_CHAT and chat_id != ALLOWED_CHAT:
+                    send(chat_id, "⛔ 未授權的使用者")
+                    continue
+                print(f"按鈕 from {chat_id}: {cq.get('data')}")
+                handle_callback(chat_id, cq.get("data", ""))
+                continue
+
             msg = u.get("message") or u.get("edited_message")
             if not msg or "text" not in msg:
                 continue
