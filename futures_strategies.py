@@ -1,0 +1,178 @@
+"""穀物期貨交易策略 (黃豆 / 小麥 / 玉米) — 可做多亦可做空, 參數集中於 CONFIG.
+
+商品期貨與股票最大不同: 沒有「只能做多」的限制, 且趨勢跟蹤在農產品上長期有效
+(Turtle 海龜系統當年就是在商品上發跡). 本檔提供五個風格互補的策略:
+
+  T  唐奇安 20/10 突破 (Turtle System-1)   — 中期趨勢跟蹤, 多空雙向
+  D  唐奇安 55/20 突破 (Turtle System-2)   — 長期趨勢跟蹤, 多空雙向
+  M  雙均線趨勢 (50/100, MA 交叉出場)      — 平滑趨勢跟蹤, 多空雙向
+  B  布林通道均值回歸 (逆勢)               — 區間行情, 多空雙向
+  S  穀物季節性做多 (收割低點進場)         — 利用農產品播種/天候溢價
+
+所有可調參數集中在 CONFIG, 供 futures_optimize.py 樣本內/外掃描共用。
+
+訊號函式回傳 dict (或 None):
+  dir            +1 做多 / -1 做空
+  stop_atr       初始停損 = entry - dir * stop_atr * ATR20  (災難停損)
+  exit_channel n 反向 n 日通道出場 (多單跌破 n 日低 / 空單突破 n 日高)
+  exit_mid       True: 回到中軌 (MA20) 出場 (均值回歸用)
+  exit_ma (f,s)  MA(f)/MA(s) 反向交叉時出場 (雙均線策略用)
+  max_hold       最長持有交易日
+"""
+import numpy as np
+import pandas as pd
+
+# 25 年回測證據: 穀物做空在 T/D/M/B 上一致虧損 (做空 PF 0.54~0.70, 做多 PF 1.07~1.87).
+# 原因 — 農產品長期有上行漂移 (通膨/需求成長), 天候衝擊使價格「向上」跳空,
+# 且趨勢濾網 (MA) 讓多單自動避開空頭段。故預設僅做多, 此旗標可開啟做空。
+ALLOW_SHORT = False
+
+# 預先計算的均線與唐奇安通道長度 (CONFIG 只能引用這些, 以免每次掃描重算指標)
+MA_LENS = [20, 30, 50, 80, 100, 150, 200]
+DC_LENS = [10, 15, 20, 40, 55, 80, 100]
+
+# 各策略參數 — 經 futures_optimize.py 樣本內(2000-15)挑選、樣本外(2016-26)驗證.
+# 每組都來自「整片網格大多 OOS 獲利」的穩健區, 非單一尖峰 (防過擬合).
+#   T: entry 20→40 (20 日突破太雜訊, 拉長至 40 後 OOS 100% 獲利)
+#   M: stop 3.0→2.5 (50/100 均線在 OOS PF 1.52)
+#   D: trend 200→150 (OOS PF 1.71, Sharpe 0.41)
+#   S: 11 月→12 月進場、持有 150→100 日 (OOS PF 3.20 — 抓 12 月低點到春季行情)
+CONFIG = {
+    "T": {"entry": 40, "exit": 20, "stop": 2.5, "trend": 100, "max_hold": 200},
+    "D": {"entry": 55, "exit": 20, "stop": 2.5, "trend": 150, "max_hold": 300},
+    "M": {"fast": 50, "slow": 100, "stop": 2.5, "max_hold": 400},
+    "B": {"std": 2.0, "stop": 2.0, "slope": 0.04, "devi": 0.15,
+          "trend": 100, "max_hold": 20},
+    "S": {"month": 12, "hold": 100, "stop": 3.0, "trend": 0},
+}
+
+
+def add_indicators(df):
+    df = df.copy()
+    for n in MA_LENS:
+        df[f"ma{n}"] = df["close"].rolling(n).mean()
+
+    tr = np.maximum(df["high"] - df["low"],
+                    np.maximum((df["high"] - df["close"].shift()).abs(),
+                               (df["low"] - df["close"].shift()).abs()))
+    df["atr20"] = tr.rolling(20).mean()
+
+    # 唐奇安通道 (以「前一日為止」的 N 日高低, 不含當日)
+    for n in DC_LENS:
+        df[f"dc_hi{n}"] = df["high"].rolling(n).max().shift(1)
+        df[f"dc_lo{n}"] = df["low"].rolling(n).min().shift(1)
+
+    df["std20"] = df["close"].rolling(20).std()
+    return df
+
+
+def signal_t(df, i):
+    """唐奇安突破 (Turtle System-1 風格) + MA 趨勢濾網, 反向短通道出場.
+
+    原版海龜在 ~20 個市場分散下有效; 單在 3 個穀物上突破假訊號過多,
+    故加 MA 順勢濾網: 只順著中期趨勢方向接突破, 大幅減少逆勢被洗。
+    """
+    c = CONFIG["T"]
+    row = df.iloc[i]
+    tr = row[f"ma{c['trend']}"]
+    if np.isnan(tr) or np.isnan(row["atr20"]) or row["atr20"] <= 0:
+        return None
+    if row["close"] > row[f"dc_hi{c['entry']}"] and row["close"] > tr:
+        return {"dir": +1, "stop_atr": c["stop"], "exit_channel": c["exit"],
+                "max_hold": c["max_hold"], "pyramid": True}
+    if ALLOW_SHORT and row["close"] < row[f"dc_lo{c['entry']}"] and row["close"] < tr:
+        return {"dir": -1, "stop_atr": c["stop"], "exit_channel": c["exit"],
+                "max_hold": c["max_hold"], "pyramid": True}
+    return None
+
+
+def signal_d(df, i):
+    """唐奇安長線突破 (Turtle System-2 風格) + MA 趨勢濾網, 反向通道出場."""
+    c = CONFIG["D"]
+    row = df.iloc[i]
+    tr = row[f"ma{c['trend']}"]
+    if np.isnan(tr) or np.isnan(row["atr20"]) or row["atr20"] <= 0:
+        return None
+    if row["close"] > row[f"dc_hi{c['entry']}"] and row["close"] > tr:
+        return {"dir": +1, "stop_atr": c["stop"], "exit_channel": c["exit"],
+                "max_hold": c["max_hold"], "pyramid": True}
+    if ALLOW_SHORT and row["close"] < row[f"dc_lo{c['entry']}"] and row["close"] < tr:
+        return {"dir": -1, "stop_atr": c["stop"], "exit_channel": c["exit"],
+                "max_hold": c["max_hold"], "pyramid": True}
+    return None
+
+
+def signal_m(df, i):
+    """雙均線趨勢 — MA(fast)/MA(slow) 交叉; 反向交叉出場, ATR 災難停損保底."""
+    c = CONFIG["M"]
+    row, prev = df.iloc[i], df.iloc[i - 1]
+    f, s = f"ma{c['fast']}", f"ma{c['slow']}"
+    if np.isnan(row[s]) or np.isnan(row["atr20"]) or row["atr20"] <= 0:
+        return None
+    cross_up = prev[f] <= prev[s] and row[f] > row[s]
+    cross_dn = prev[f] >= prev[s] and row[f] < row[s]
+    if cross_up:
+        return {"dir": +1, "stop_atr": c["stop"], "exit_ma": (c["fast"], c["slow"]),
+                "max_hold": c["max_hold"], "pyramid": True}
+    if ALLOW_SHORT and cross_dn:
+        return {"dir": -1, "stop_atr": c["stop"], "exit_ma": (c["fast"], c["slow"]),
+                "max_hold": c["max_hold"], "pyramid": True}
+    return None
+
+
+def signal_b(df, i):
+    """布林通道均值回歸 (逆勢) — 收盤穿出 ±std·σ 後反向進場, 回到中軌出場.
+
+    區間濾網: 只在「中期趨勢平緩」時做逆勢 (MA{trend} 斜率小且乖離小),
+    趨勢過陡時讓路給 T/D/M, 避免在大趨勢中硬接刀。
+    """
+    c = CONFIG["B"]
+    row = df.iloc[i]
+    tr = row[f"ma{c['trend']}"]
+    if np.isnan(row["std20"]) or np.isnan(tr) or row["atr20"] <= 0:
+        return None
+    slope = abs(tr / df[f"ma{c['trend']}"].iloc[i - 20] - 1)
+    if slope > c["slope"] or abs(row["close"] / tr - 1) > c["devi"]:
+        return None
+    up = row["ma20"] + c["std"] * row["std20"]
+    dn = row["ma20"] - c["std"] * row["std20"]
+    if row["close"] < dn:
+        return {"dir": +1, "stop_atr": c["stop"], "exit_mid": True,
+                "max_hold": c["max_hold"]}
+    if ALLOW_SHORT and row["close"] > up:
+        return {"dir": -1, "stop_atr": c["stop"], "exit_mid": True,
+                "max_hold": c["max_hold"]}
+    return None
+
+
+def signal_s(df, i):
+    """穀物季節性做多 — 每年特定月初 (收割賣壓尾聲) 進場, 持有至隔年初夏.
+
+    農產品常於北美收割期 (9-10 月) 形成季節低點, 隨後因庫存消化、隔年播種與
+    天候溢價而走強。此策略每年該月第一個交易日做多, 持有 hold 個交易日,
+    以寬 ATR 停損防黑天鵝。trend>0 時加 MA 濾網 (僅在多頭時進場)。
+    """
+    c = CONFIG["S"]
+    row, prev = df.iloc[i], df.iloc[i - 1]
+    if np.isnan(row["atr20"]) or row["atr20"] <= 0:
+        return None
+    if c["trend"]:
+        tr = row[f"ma{c['trend']}"]
+        if np.isnan(tr) or row["close"] < tr:
+            return None
+    if row["date"].month == c["month"] and prev["date"].month != c["month"]:
+        return {"dir": +1, "stop_atr": c["stop"], "max_hold": c["hold"]}
+    return None
+
+
+STRATEGIES = {
+    "T": signal_t, "D": signal_d, "M": signal_m, "B": signal_b, "S": signal_s,
+}
+
+STRATEGY_NAMES = {
+    "T": "唐奇安突破(短)",
+    "D": "唐奇安突破(長)",
+    "M": "雙均線趨勢",
+    "B": "布林均值回歸",
+    "S": "穀物季節做多",
+}
