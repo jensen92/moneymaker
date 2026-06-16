@@ -688,20 +688,24 @@ def scheduler_loop():
 
 HELP = (
     "📈 策略機器人 — 點下方按鈕直接執行:\n"
-    "🔍 全市場掃描     PA/PB/D 符合清單 + 進出場點位\n"
+    "🔍 全市場掃描     PA/PB/D/C 符合清單 + 進出場點位\n"
+    "📈 期貨每日訊號    穀物期貨 (M/D/S) 進出場\n"
     "📅 本年度進出清單  今年回測進出交易 + 損益\n"
-    "📖 策略設計方式    PA/PB/D 設計與進出場邏輯\n"
+    "📖 策略設計方式    策略設計與進出場邏輯\n"
+    "🔄 同步最新策略    git pull 雲端更新並重啟\n"
     "\n"
-    "也可打字: /analyze 2330 (個股分析)、/menu (叫出選單)\n"
-    "(每日 08:00 自動全市場掃描並推播)"
+    "也可打字: /analyze 2330、/futures M,D,S、/update、/menu\n"
+    "(每日 08:00 由 GitHub Actions 自動推播)"
 )
 
 # Telegram inline keyboard: callback_data 對應 handle_callback 的分支
 MENU_KEYBOARD = {
     "inline_keyboard": [
         [{"text": "🔍 全市場掃描", "callback_data": "scan"}],
+        [{"text": "📈 期貨每日訊號", "callback_data": "futures"}],
         [{"text": "📅 本年度進出清單", "callback_data": "year"}],
         [{"text": "📖 策略設計方式", "callback_data": "doc"}],
+        [{"text": "🔄 同步最新策略", "callback_data": "update"}],
     ]
 }
 
@@ -732,9 +736,18 @@ def handle_callback(chat_id, data):
     elif data == "year":
         threading.Thread(target=year_trades_job, args=(chat_id,),
                          daemon=True).start()
+    elif data == "futures":
+        threading.Thread(target=futures_job, args=(chat_id,),
+                         daemon=True).start()
     elif data == "doc":
         send(chat_id, STRATEGY_DOC)
         send_menu(chat_id)
+    elif data == "update":
+        out = _git_pull()
+        send(chat_id, f"🔄 git pull:\n{out[:1000]}")
+        if "up to date" not in out.lower():
+            send(chat_id, "♻️ 套用更新並重啟中...")
+            _reexec()
 
 
 def handle(chat_id, text):
@@ -770,6 +783,16 @@ def handle(chat_id, text):
     elif cmd == "scan":
         threading.Thread(target=scan_job, args=(chat_id,),
                          daemon=True).start()
+    elif cmd == "futures":
+        strats = args[0] if args else "M,D,S"
+        threading.Thread(target=futures_job, args=(chat_id, strats),
+                         daemon=True).start()
+    elif cmd == "update":
+        out = _git_pull()
+        send(chat_id, f"🔄 git pull:\n{out[:1000]}")
+        if "up to date" not in out.lower():
+            send(chat_id, "♻️ 套用更新並重啟中...")
+            _reexec()
     elif cmd == "analyze":
         if not args:
             send(chat_id, "用法: /analyze 2330")
@@ -779,6 +802,55 @@ def handle(chat_id, text):
                          daemon=True).start()
     else:
         send(chat_id, f"未知指令: {text}\n\n{HELP}")
+
+
+# ── 期貨每日訊號 ─────────────────────────────────────────────────────────────
+
+def futures_job(chat_id, strats="M,D,S"):
+    if not _job_lock.acquire(blocking=False):
+        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
+        return
+    try:
+        send(chat_id, "⏳ 更新期貨資料 + 掃描訊號中...")
+        run_script(["futures_data.py"])
+        out = run_script(["futures_signals.py", "--strategies", strats])
+        send(chat_id, f"📈 期貨每日訊號 ({strats})\n\n{out}")
+    finally:
+        _job_lock.release()
+
+
+# ── 自動同步雲端最新程式碼 ───────────────────────────────────────────────────
+
+def _git_pull():
+    """git pull 最新 main; 回傳輸出文字 (含錯誤)."""
+    try:
+        out = subprocess.run(["git", "pull", "--rebase", "origin", "main"],
+                             cwd=HERE, capture_output=True, text=True,
+                             timeout=120)
+        return ((out.stdout or "") + (out.stderr or "")).strip() or "(無輸出)"
+    except Exception as e:  # noqa: BLE001
+        return f"git pull 失敗: {e}"
+
+
+def _reexec():
+    """用最新程式碼重啟自己 (套用 telegram_bot.py / 策略檔更新)."""
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+def auto_update_loop(interval=3600):
+    """每隔 interval 秒自動 git pull; 偵測到更新且無任務在跑時重啟套用."""
+    while True:
+        time.sleep(interval)
+        msg = _git_pull()
+        if "up to date" in msg.lower() or "已經是最新" in msg:
+            continue
+        # 有更新 → 趁沒有任務在跑時重啟 (策略檔每次指令會自動 reload, 重啟確保完整)
+        if _job_lock.acquire(blocking=False):
+            _job_lock.release()
+            if ALLOWED_CHAT:
+                send(ALLOWED_CHAT, "🔄 偵測到雲端策略更新，已同步並重啟")
+            print("[auto-update] 偵測到更新, 重啟中...\n" + msg[:300])
+            _reexec()
 
 
 # ── 主迴圈 ─────────────────────────────────────────────────────────────────
@@ -810,6 +882,10 @@ def main():
     # 若要改由本機器人推播, 設環境變數 BOT_DAILY_SCAN=1
     if os.environ.get("BOT_DAILY_SCAN", "").strip() == "1":
         threading.Thread(target=scheduler_loop, daemon=True).start()
+    # 自動同步雲端最新策略 (預設開啟; 設 BOT_AUTO_UPDATE=0 可關閉)
+    if os.environ.get("BOT_AUTO_UPDATE", "1").strip() == "1" \
+            and os.path.isdir(os.path.join(HERE, ".git")):
+        threading.Thread(target=auto_update_loop, daemon=True).start()
     try:
         r0 = requests.get(f"{API}/getUpdates", params={"offset": -1}, timeout=10)
         updates0 = r0.json().get("result", [])
