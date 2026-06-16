@@ -1,0 +1,68 @@
+name: 每日選股掃描 (PA + PB + D)
+
+on:
+  schedule:
+    # 台灣時間 08:00 = UTC 00:00，週一至週五
+    - cron: '0 0 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (不發 Telegram，只印結果)'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write   # 需要 push picks/ 檔案
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pandas numpy requests
+
+      # 用 GitHub Actions Cache 保留 data_adj/（股價資料）
+      # restore-keys 模糊比對：只要 OS 相同就嘗試還原最近的快取
+      - name: Restore stock data cache
+        id: cache-data
+        uses: actions/cache@v4
+        with:
+          path: data_adj/
+          key: stock-data-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            stock-data-${{ runner.os }}-
+
+      - name: Download / update stock data
+        run: |
+          echo "從 Yahoo Finance 增量更新 (已存在的檔案自動跳過)..."
+          python download_all.py
+        env:
+          # download_all.py 跳過已存在的 CSV，大幅縮短二次執行時間
+          PYTHONUNBUFFERED: "1"
+
+      - name: Run daily scan
+        run: python github_scan.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MM_DATA_DIR: data_adj
+          # dry_run 時清空 token，scan 腳本會跳過 Telegram 發送
+          SKIP_TELEGRAM: ${{ github.event.inputs.dry_run }}
+
+      - name: Commit picks file
+        run: |
+          git config user.email "noreply@anthropic.com"
+          git config user.name "Claude"
+          git add picks/
+          git diff --staged --quiet || git commit -m "Daily picks $(date +%Y-%m-%d)"
+          git push
