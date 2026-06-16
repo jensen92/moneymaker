@@ -23,11 +23,11 @@ DATA_DIR = os.environ.get("MM_DATA_DIR",
 bt.DATA_DIR = DATA_DIR
 
 from backtest import load_regime, INIT_CAPITAL, RISK_PCT, PICKS_PER_DAY, compute_rs_rank
-from strategies import STRATEGIES, add_indicators
+from strategies import STRATEGIES, add_indicators, _d_features
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
-SCAN_KEYS = ["PA", "PB", "D"]
+SCAN_KEYS = ["PA", "PB", "D", "C"]
 PICKS_DIR = Path(__file__).parent / "picks"
 PICKS_DIR.mkdir(exist_ok=True)
 
@@ -82,6 +82,61 @@ def load_all_data():
     return all_data, names
 
 
+def _build_watchlist(all_data, names, rs, latest_date):
+    """找出通過趨勢模板、RS > 0.75，但收縮或突破條件尚未達標的股票。"""
+    # 最寬鬆門檻 (C_CONFIG): contraction < 0.80, rs_min = 0.80
+    WATCH_RS = 0.75
+    WATCH_CONTRACTION = 0.85   # 比門檻寬一點的觀察區間
+
+    candidates = []
+    for code, df in all_data.items():
+        i = len(df) - 1
+        d = df["date"].iloc[i]
+        if latest_date and d < latest_date:
+            continue
+        try:
+            rk = rs.at[d, code]
+        except KeyError:
+            continue
+        if rk is None or (isinstance(rk, float) and np.isnan(rk)):
+            continue
+        if rk < WATCH_RS:
+            continue
+
+        feat = _d_features(df, i, rk)
+        if feat is None:
+            continue  # 未過模板，略過
+
+        # 已有任一策略訊號 → 不加入觀察 (已在主清單)
+        already = any(STRATEGIES[k](df, i, rs_rank=rk) for k in SCAN_KEYS)
+        if already:
+            continue
+
+        # 只收縮差距在 0.05 以內，或突破接近（前20高的95%以內）
+        ctr = feat["contraction"]
+        if ctr > WATCH_CONTRACTION:
+            continue
+
+        row = df.iloc[i]
+        prior_high20 = df["high"].iloc[i - 20: i].max()
+        near_breakout = row["close"] >= prior_high20 * 0.95
+
+        candidates.append({
+            "code":        code,
+            "name":        names.get(code, ""),
+            "rs":          rk,
+            "contraction": ctr,
+            "threshold":   0.80,
+            "vol_surge":   feat["vol_surge"],
+            "breakout":    feat["breakout"],
+            "near_bo":     near_breakout,
+        })
+
+    # 排序: 優先近突破 + RS 高
+    candidates.sort(key=lambda x: (-int(x["near_bo"]), -x["rs"]))
+    return candidates[:10]
+
+
 def main():
     print(f"=== 每日選股掃描 {datetime.now():%Y-%m-%d %H:%M} ===")
 
@@ -121,7 +176,8 @@ def main():
 
     label = {"PA": "PA 最嚴 (PF3.4/勝率57%)",
              "PB": "PB 平衡 (PF2.5/勝率51%)",
-             "D":  "D  原版 (PF2.0/勝率53%)"}
+             "D":  "D  原版 (PF2.0/勝率53%)",
+             "C":  "C  寬鬆 (PF1.8/勝率46%)"}
 
     for key in SCAN_KEYS:
         lines.append(f"<b>【策略 {label[key]}】</b>")
@@ -152,6 +208,21 @@ def main():
             )
         lines.append("")
 
+    # ── 近觸發觀察名單 ──
+    watchlist = _build_watchlist(all_data, names, rs, latest_date)
+    lines.append("<b>【近觸發觀察名單】</b>  (模板✅ 收縮未達/量未爆 但 RS &gt; 0.75)")
+    if not regime_ok:
+        lines.append("  大盤偏弱，僅供參考")
+    if watchlist:
+        for w in watchlist[:8]:
+            lines.append(
+                f"  <b>{w['code']} {w['name']}</b>  RS:{w['rs']:.2f}\n"
+                f"    收縮:{w['contraction']:.3f}(需&lt;{w['threshold']:.2f})  "
+                f"量比:{w['vol_surge']:.1f}x  突破:{'✅' if w['breakout'] else '❌'}"
+            )
+    else:
+        lines.append("  (今日無近觸發候選)")
+    lines.append("")
     lines.append("─" * 30)
     lines.append("⚠️ 以上為量化訊號, 僅供參考, 請自行評估風險。")
 
