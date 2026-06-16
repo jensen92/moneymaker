@@ -170,62 +170,54 @@ def main():
 
     # ── 組成輸出內容 ──
     lines = []
-    lines.append(f"📊 <b>每日選股報告 {today_str}</b>")
-    lines.append(f"大盤狀態: {'✅ 多頭 (可進場)' if regime_ok else '⛔ 偏弱 (今日不進場)'}")
+    lines.append(f"📊 <b>每日選股 {today_str}</b>　"
+                 f"大盤{'✅多頭' if regime_ok else '⛔偏弱'}")
     lines.append("")
 
-    label = {"PA": "PA 最嚴 (PF3.4/勝率57%)",
-             "PB": "PB 平衡 (PF2.5/勝率51%)",
-             "D":  "D  原版 (PF2.0/勝率53%)",
-             "C":  "C  寬鬆 (PF1.8/勝率46%)"}
+    label = {"PA": "PA 最嚴", "PB": "PB 平衡", "D": "D 原版", "C": "C 寬鬆"}
+    stats = {"PA": "PF3.4 勝57%", "PB": "PF2.5 勝51%",
+             "D": "PF2.0 勝53%", "C": "PF1.8 勝46%"}
 
-    for key in SCAN_KEYS:
-        lines.append(f"<b>【策略 {label[key]}】</b>")
-        if not regime_ok:
-            lines.append("  今日大盤不符合進場條件")
-            lines.append("")
-            continue
-        picks = sorted(candidates[key], reverse=True)[:PICKS_PER_DAY]
-        if not picks:
-            lines.append("  (今日無訊號)")
-            lines.append("")
-            continue
-        for score, code, df, s in picks:
-            row = df.iloc[-1]
-            ref = row["close"]
-            stop_pct = s.get("stop_pct", 0.08)
-            stop = ref * (1 - stop_pct)
-            risk_amt = INIT_CAPITAL * RISK_PCT
-            shares = int(risk_amt / max(ref - stop, 0.01) / 1000) * 1000
-            name = names.get(code, "")
-            gain_cap = s.get("gain_cap", 9.99)
-            gain_str = f"突破漲幅上限 {gain_cap:.0%}" if gain_cap < 9 else "讓利潤奔跑"
-            lines.append(
-                f"  <b>{code} {name}</b>\n"
-                f"    參考進場: {ref:.2f}  停損: {stop:.2f} (-{stop_pct:.0%})\n"
-                f"    建議股數: {shares:,} 股  RS: {score:.2f}\n"
-                f"    最長持有: {s['max_hold']} 日  出場: {gain_str}"
-            )
+    if not regime_ok:
+        lines.append("今日大盤偏弱，PA/PB/D/C 均不進場")
         lines.append("")
+    else:
+        for key in SCAN_KEYS:
+            picks = sorted(candidates[key], reverse=True)[:PICKS_PER_DAY]
+            if not picks:
+                lines.append(f"<b>▍{label[key]}</b> {stats[key]}　(無訊號)")
+                continue
+            s0 = picks[0][3]
+            stop_pct = s0.get("stop_pct", 0.08)
+            gain_cap = s0.get("gain_cap", 9.99)
+            gain_str = f"突破上限{gain_cap:.0%}" if gain_cap < 9 else "讓利潤奔跑"
+            lines.append(
+                f"<b>▍{label[key]}</b> {stats[key]} · 停損-{stop_pct:.0%} · "
+                f"持有{s0['max_hold']}日 · {gain_str}")
+            for score, code, df, s in picks:
+                ref = df.iloc[-1]["close"]
+                stop = ref * (1 - stop_pct)
+                shares = int(INIT_CAPITAL * RISK_PCT
+                             / max(ref - stop, 0.01) / 1000) * 1000
+                name = names.get(code, "")
+                lines.append(
+                    f"  {code} {name}　進{ref:.1f} 損{stop:.1f}　"
+                    f"{shares:,}股 RS{score:.2f}")
+            lines.append("")
 
     # ── 近觸發觀察名單 ──
     watchlist = _build_watchlist(all_data, names, rs, latest_date)
-    lines.append("<b>【近觸發觀察名單】</b>  (模板✅ 收縮未達但 RS &gt; 0.75)")
-    if not regime_ok:
-        lines.append("  大盤偏弱，僅供參考")
+    lines.append("<b>▍近觸發觀察名單</b> RS&gt;0.75 模板✅ 收縮未達")
     if watchlist:
         for w in watchlist[:8]:
             lines.append(
-                f"  <b>{w['code']} {w['name']}</b>  RS:{w['rs']:.2f}\n"
-                f"    收縮:{w['contraction']:.3f}(需&lt;{w['threshold']:.2f})  "
-                f"量比:{w['vol_surge']:.1f}x  突破:{'✅' if w['breakout'] else '❌'}"
-            )
+                f"  {w['code']} {w['name']}　RS{w['rs']:.2f} "
+                f"收縮{w['contraction']:.2f} 量{w['vol_surge']:.1f}x "
+                f"突破{'✅' if w['breakout'] else '❌'}")
     else:
         lines.append("  (今日無近觸發候選)")
     lines.append("")
-
-    lines.append("─" * 30)
-    lines.append("⚠️ 以上為量化訊號, 僅供參考, 請自行評估風險。")
+    lines.append("⚠️ 量化訊號僅供參考，請自行評估風險")
 
     output = "\n".join(lines)
 
