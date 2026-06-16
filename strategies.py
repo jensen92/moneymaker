@@ -390,6 +390,42 @@ def signal_d(df, i, rs_rank=None):
     return _d_signal(_d_features(df, i, rs_rank), D_CONFIG)
 
 
+# ─────────────────────────────────────────────────────────────
+# 策略 PA / PB / PC — 高 PF 選股 (D 引擎 + 進場品質加嚴, 為 2x 槓桿設計)
+# ─────────────────────────────────────────────────────────────
+# optimize_pf.py 108 組掃描的產物. 核心發現 (兩個旋鈕讓 PF 1.81→2.5~3.5):
+#   1. gain_cap=0.06: 突破日漲幅 <= 6% 才買 (緊貼樞軸點, 絕不追高) —
+#      Minervini「儘可能接近中樞點買入」的量化.
+#   2. use_three_week=True: 讓贏家奔跑 (不太早賣半), 放大右尾.
+# 三組差別在「進場鬆緊 ↔ 交易數/報酬」取捨; 皆為 1x 基準, 上 2x 槓桿前先確認回撤.
+#   PA 最穩: 132筆 勝率57% PF3.53 年化4.2% 回撤5.5% MAR0.77 (槓桿最安全, 但資金常閒置)
+#   PB 平衡: 208筆 勝率51% PF2.46 年化5.0% 回撤6.5% MAR0.76 (報酬與安全兼顧)
+#   PC 積極: 328筆 勝率48% PF2.00 年化5.7% 回撤12.9% MAR0.44 (交易最多, 回撤較深)
+_PF_BASE = {"vol_mult": 1.5, "three_week_gain": 0.20,
+            "use_three_week": True, "max_hold": 9999}
+PA_CONFIG = {**_PF_BASE, "rs_min": 0.85, "contraction": 0.70,
+             "gain_cap": 0.06, "stop_pct": 0.10}
+PB_CONFIG = {**_PF_BASE, "rs_min": 0.85, "contraction": 0.75,
+             "gain_cap": 0.06, "stop_pct": 0.10}
+PC_CONFIG = {**_PF_BASE, "rs_min": 0.85, "contraction": 0.75,
+             "gain_cap": 0.08, "stop_pct": 0.10}
+
+
+def signal_pa(df, i, rs_rank=None):
+    """高 PF 選股 A — 最嚴進場 (PF 3.53 / 勝率 57%), 2x 槓桿最安全."""
+    return _d_signal(_d_features(df, i, rs_rank), PA_CONFIG)
+
+
+def signal_pb(df, i, rs_rank=None):
+    """高 PF 選股 B — 平衡 (PF 2.46 / 勝率 51% / MAR 0.76), 報酬與安全兼顧."""
+    return _d_signal(_d_features(df, i, rs_rank), PB_CONFIG)
+
+
+def signal_pc(df, i, rs_rank=None):
+    """高 PF 選股 C — 積極 (PF 2.00 / 交易 328 筆), 交易最多但回撤較深."""
+    return _d_signal(_d_features(df, i, rs_rank), PC_CONFIG)
+
+
 
 # ─────────────────────────────────────────────────────────────
 # 策略 E — 強勢股回檔買進 (low-correlation 互補, 與 C/D 報酬來源不同)
@@ -913,4 +949,5 @@ def signal_i(df, i, rs_rank=None):
 
 
 STRATEGIES = {"A": signal_a, "C": signal_c, "D": signal_d, "E": signal_e,
-              "F": signal_f, "G": signal_g, "H": signal_h, "I": signal_i}
+              "F": signal_f, "G": signal_g, "H": signal_h, "I": signal_i,
+              "PA": signal_pa, "PB": signal_pb, "PC": signal_pc}
