@@ -1,22 +1,19 @@
-"""10 個經典飆股篩選法 (專家原始預設參數, 不調參) 全市場回測比較.
+"""勝出的 5 個經典飆股篩選法 (專家原始預設參數, 不調參) — 全市場回測.
 
-方法清單 (皆採書中/原始文獻的標準預設值, 未經本研究調整):
-  1. Darvas Box           — Nicolas Darvas《我如何在股市賺到200萬》
-  2. CANSLIM 樞紐買點      — William O'Neil《股市致富術》(突破量>1.4x, 停損7%)
-  3. Weinstein Stage 2     — Stan Weinstein《獲利的祕密》(站上30週均線+量增)
-  4. Turtle System 1       — Curtis Faith《海龜交易法則》(20日突破/10日出場)
-  5. Turtle System 2       — 同上 (55日突破/20日出場)
-  6. 黃金交叉 (Golden Cross) — 經典 50/200 均線交叉, 跌破200均線出場
-  7. 布林通道突破 (Bollinger)— John Bollinger 原始 (20,2), 收窄後突破上軌
-  8. 52週新高動能            — 學術動能因子 (Jegadeesh/Hwang-George 52w high effect)
-  9. RS 90 領漲股            — O'Neil RS Rating>=90 + 價格貼近52週高
-  10. ADX 趨勢突破            — Welles Wilder《新趨勢交易系統》(ADX>25 + 突破)
+原始研究比較了 10 個方法 (見 git 歷史 commit c36a4cd), 以同一引擎/成本/風控對比
+現行策略 C/D (1x 標準帳, CAGR ~5%)。下列 5 法在 CAGR 上明確勝出, 予以保留:
+  1. 52週新高動能  — 學術動能因子 (Jegadeesh; Hwang-George 52w high), CAGR 20.0% / MAR 0.91
+  2. ADX 趨勢突破  — Welles Wilder《新趨勢交易系統》(ADX>25), CAGR 16.4%
+  3. Turtle System 2 — Curtis Faith《海龜交易法則》(55日突破/20日出場), CAGR 15.2%
+  4. CANSLIM 樞紐買點 — William O'Neil《股市致富術》(量>1.4x, 停損7%), CAGR 13.2%
+  5. Turtle System 1 — 同海龜 (20日突破/10日出場), CAGR 13.1%
+已淘汰 (CAGR 不如 C/D 或虧損): Darvas Box, Weinstein Stage2, 黃金交叉,
+布林通道突破 (唯一虧損 PF 0.61), RS90 領漲股 (邊際, 9.9%)。
 
 引擎: 完整複製 backtest.run_sub 之成本/部位/制度濾網 (手續費/稅/滑價/單筆風險
 1%/每日最多2檔/最多8檔持倉/回撤熔斷20%/三段式市況/波動目標化), 僅將出場判定
 擴充為通用的 ma_exit_col (跌破指定均線) 與 roll_low_exit (跌破N日低) 兩種,
-以忠實還原各法原始出場規則 (Minervini 專屬的賣半/三週法則不套用於此 10 法,
-避免規則混血失真)。
+以忠實還原各法原始出場規則 (Minervini 專屬的賣半/三週法則不套用, 避免規則混血)。
 """
 import os
 import sys
@@ -38,25 +35,14 @@ DEFAULT_MAX_HOLD = 9999      # 無明確時間出場的方法用的後備上限 
 def extend(df):
     df = df.copy()
     df["high20p"]  = df["high"].rolling(20).max().shift(1)
-    df["high40p"]  = df["high"].rolling(40).max().shift(1)
     df["high55p"]  = df["high"].rolling(55).max().shift(1)
     df["low10p"]   = df["low"].rolling(10).min().shift(1)
     df["low20p"]   = df["low"].rolling(20).min().shift(1)
-    df["low20box"] = df["low"].rolling(20).min().shift(1)   # darvas box 底 (同 low20p)
     df["atr20"] = np.maximum(
         df["high"] - df["low"],
         np.maximum((df["high"] - df["close"].shift()).abs(),
                    (df["low"] - df["close"].shift()).abs())
     ).rolling(20).mean()
-
-    bb_mid = df["close"].rolling(20).mean()
-    bb_std = df["close"].rolling(20).std()
-    df["bb_mid"] = bb_mid
-    df["bb_upper"] = bb_mid + 2 * bb_std
-    df["bb_lower"] = bb_mid - 2 * bb_std
-    df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / bb_mid
-    df["bb_width_min120"] = df["bb_width"].rolling(120).min()
-    df["bb_std"] = bb_std
 
     # ADX(14) — Wilder 原始平滑法
     up_move = df["high"].diff()
@@ -76,28 +62,7 @@ def extend(df):
     return df
 
 
-# ───────────────────────────── 10 個方法 ─────────────────────────────
-def sig_darvas(df, i, rs):
-    row = df.iloc[i]
-    if np.isnan(row["low20box"]) or row["close"] < 10:
-        return None
-    if row["volume"] * row["close"] < MIN_TURNOVER:
-        return None
-    box_top = row["high20p"]
-    box_confirmed = df["high"].iloc[max(0, i - 3):i].max() <= box_top  # 近3日未創新高(箱型確立)
-    if not (row["close"] > box_top and box_confirmed):
-        return None
-    if not (row["volume"] > row["vol_ma50"]):       # Darvas: 突破需放量
-        return None
-    box_low = row["low20box"]
-    if box_low <= 0 or box_low >= row["close"]:
-        return None
-    return {"score": rs if rs is not None else 0.5,
-            "stop_pct": (row["close"] - box_low) / row["close"],
-            "trail_atr": 3.0,           # 近似 Darvas「箱型墊高停損」之後續移動停損
-            "max_hold": DEFAULT_MAX_HOLD}
-
-
+# ───────────────────────────── 勝出的 5 個方法 ─────────────────────────────
 def sig_canslim(df, i, rs):
     row = df.iloc[i]
     if rs is None or row["close"] < 10:
@@ -116,27 +81,6 @@ def sig_canslim(df, i, rs):
     # O'Neil 經典出場心法之一: 跌破50日均線賣出 (《股市致富術》第7章停損規則),
     # 取代原先「無出場規則」之 bug (max_hold=9999 會讓贏家永不結算)
     return {"score": rs, "stop_pct": 0.07, "ma_exit_col": "ma50",
-            "max_hold": DEFAULT_MAX_HOLD}
-
-
-def sig_weinstein(df, i, rs):
-    row = df.iloc[i]
-    if row["close"] < 10 or np.isnan(row["ma150"]):
-        return None
-    if row["volume"] * row["close"] < MIN_TURNOVER:
-        return None
-    if i < 160:
-        return None
-    ma150_rising = row["ma150"] > df["ma150"].iloc[i - 10]
-    base_high = row["high40p"]
-    if np.isnan(base_high):
-        return None
-    breakout = row["close"] > base_high and row["close"] > row["ma150"]
-    vol_surge = row["volume"] > row["vol_ma50"] * 1.50         # Weinstein: 放量確認
-    if not (breakout and ma150_rising and vol_surge):
-        return None
-    return {"score": rs if rs is not None else 0.5,
-            "stop_pct": 0.10, "ma_exit_col": "ma150",
             "max_hold": DEFAULT_MAX_HOLD}
 
 
@@ -166,42 +110,6 @@ def sig_turtle2(df, i, rs):
             "max_hold": DEFAULT_MAX_HOLD}
 
 
-def sig_golden_cross(df, i, rs):
-    row = df.iloc[i]
-    if row["close"] < 10 or np.isnan(row["ma200"]) or i < 1:
-        return None
-    if row["volume"] * row["close"] < MIN_TURNOVER:
-        return None
-    prev = df.iloc[i - 1]
-    crossed = prev["ma50"] <= prev["ma200"] and row["ma50"] > row["ma200"]
-    if not (crossed and row["close"] > row["ma50"]):
-        return None
-    return {"score": rs if rs is not None else 0.5,
-            "stop_pct": 0.10, "ma_exit_col": "ma200",
-            "max_hold": DEFAULT_MAX_HOLD}
-
-
-def sig_bollinger(df, i, rs):
-    row = df.iloc[i]
-    if row["close"] < 10 or np.isnan(row["bb_width_min120"]):
-        return None
-    if row["volume"] * row["close"] < MIN_TURNOVER:
-        return None
-    prev = df.iloc[i - 1]
-    squeeze = prev["bb_width"] <= prev["bb_width_min120"] * 1.05   # 收窄至120日新低附近
-    breakout = row["close"] > row["bb_upper"]
-    vol_ok = row["volume"] > row["vol_ma50"] * 1.50
-    if not (squeeze and breakout and vol_ok):
-        return None
-    std = row["bb_std"]
-    if np.isnan(std) or std <= 0:
-        return None
-    return {"score": rs if rs is not None else 0.5,
-            "stop_pct": min(0.15, std / row["close"]),   # 停損=1個標準差
-            "ma_exit_col": "bb_mid",
-            "max_hold": DEFAULT_MAX_HOLD}
-
-
 def sig_52w_high(df, i, rs):
     row = df.iloc[i]
     if row["close"] < 10 or np.isnan(row["high252"]):
@@ -214,23 +122,6 @@ def sig_52w_high(df, i, rs):
         return None
     return {"score": rs if rs is not None else 0.5,
             "stop_pct": 0.08, "max_hold": 60}     # 動能文獻常用季度持有期
-
-
-def sig_rs90(df, i, rs):
-    row = df.iloc[i]
-    if rs is None or row["close"] < 10 or np.isnan(row["high252"]):
-        return None
-    if row["volume"] * row["close"] < MIN_TURNOVER:
-        return None
-    if rs < 0.90:
-        return None
-    if not (row["close"] >= row["high252"] * 0.85):
-        return None
-    if np.isnan(row["high20p"]) or row["close"] <= row["high20p"]:
-        return None
-    # 同上, 領漲股出場採 O'Neil 跌破50日均線規則 (避免無限期持有)
-    return {"score": rs, "stop_pct": 0.08, "ma_exit_col": "ma50",
-            "max_hold": DEFAULT_MAX_HOLD}
 
 
 def sig_adx(df, i, rs):
@@ -253,16 +144,11 @@ def sig_adx(df, i, rs):
 
 
 METHODS = [
-    ("Darvas Box",        sig_darvas,      True),
-    ("CANSLIM 樞紐買點",   sig_canslim,     True),
-    ("Weinstein Stage2",  sig_weinstein,   True),
-    ("Turtle System1",    sig_turtle1,     True),
-    ("Turtle System2",    sig_turtle2,     True),
-    ("黃金交叉",           sig_golden_cross, True),
-    ("布林通道突破",       sig_bollinger,   True),
     ("52週新高動能",       sig_52w_high,    True),
-    ("RS90領漲股",        sig_rs90,        True),
     ("ADX趨勢突破",        sig_adx,         True),
+    ("Turtle System2",    sig_turtle2,     True),
+    ("CANSLIM 樞紐買點",   sig_canslim,     True),
+    ("Turtle System1",    sig_turtle1,     True),
 ]
 
 
