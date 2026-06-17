@@ -547,6 +547,21 @@ def scan_job(chat_id):
         _job_lock.release()
 
 
+def data_update_job(chat_id):
+    """手動觸發股價歷史資料增量更新 (download_all.py)."""
+    if not _job_lock.acquire(blocking=False):
+        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
+        return
+    try:
+        send(chat_id, "⏳ 更新股價歷史資料中 (增量, 約數十秒~數分鐘)...")
+        out = run_script(["download_all.py"])
+        send(chat_id, f"✅ 資料更新完成\n{out[-1000:] if out else ''}")
+    except Exception as e:  # noqa: BLE001
+        send(chat_id, f"❌ 資料更新失敗: {e}")
+    finally:
+        _job_lock.release()
+
+
 # ── 本年度進出清單 ─────────────────────────────────────────────────────────
 
 def _year_trades(progress=None, keys=None):
@@ -692,9 +707,10 @@ HELP = (
     "📈 期貨每日訊號    穀物期貨 (M/D/S) 進出場\n"
     "📅 本年度進出清單  今年回測進出交易 + 損益\n"
     "📖 策略設計方式    策略設計與進出場邏輯\n"
+    "📥 更新股價資料    增量下載最新股價 (掃描前建議先按)\n"
     "🔄 同步最新策略    git pull 雲端更新並重啟\n"
     "\n"
-    "也可打字: /analyze 2330、/futures M,D,S、/update、/menu\n"
+    "也可打字: /analyze 2330、/futures M,D,S、/refresh、/update、/menu\n"
     "(每日 08:00 由 GitHub Actions 自動推播)"
 )
 
@@ -705,6 +721,7 @@ MENU_KEYBOARD = {
         [{"text": "📈 期貨每日訊號", "callback_data": "futures"}],
         [{"text": "📅 本年度進出清單", "callback_data": "year"}],
         [{"text": "📖 策略設計方式", "callback_data": "doc"}],
+        [{"text": "📥 更新股價資料", "callback_data": "refresh"}],
         [{"text": "🔄 同步最新策略", "callback_data": "update"}],
     ]
 }
@@ -742,6 +759,9 @@ def handle_callback(chat_id, data):
     elif data == "doc":
         send(chat_id, STRATEGY_DOC)
         send_menu(chat_id)
+    elif data == "refresh":
+        threading.Thread(target=data_update_job, args=(chat_id,),
+                         daemon=True).start()
     elif data == "update":
         out = _git_pull()
         send(chat_id, f"🔄 git pull:\n{out[:1000]}")
@@ -786,6 +806,9 @@ def handle(chat_id, text):
     elif cmd == "futures":
         strats = args[0] if args else "M,D,S"
         threading.Thread(target=futures_job, args=(chat_id, strats),
+                         daemon=True).start()
+    elif cmd == "refresh":
+        threading.Thread(target=data_update_job, args=(chat_id,),
                          daemon=True).start()
     elif cmd == "update":
         out = _git_pull()
