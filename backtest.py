@@ -81,10 +81,52 @@ def load_all():
     return data, names
 
 
+class _FwdFillSet(set):
+    """日期集合, 查詢日期超出來源最後一天時, 延用最後一天的狀態.
+
+    用途: 即時選股時大盤指數 (_TWII.csv) 若比個股資料慢更新 1-2 個交易日,
+    避免單純因為「指數還沒收」就誤判成大盤未過濾、擋掉當天所有策略選股。
+    歷史回測不受影響 (TWII 永遠涵蓋全部回測區間, 不會觸發此延伸邏輯)。
+    """
+
+    def __init__(self, dates):
+        super().__init__(dates)
+        self._max = max(self) if len(self) else None
+
+    def __contains__(self, d):
+        if super().__contains__(d):
+            return True
+        if self._max is not None and d > self._max:
+            return super().__contains__(self._max)
+        return False
+
+
+class _FwdFillDict(dict):
+    """日期→值字典, 查詢日期超出來源最後一天時, 延用最後一天的值 (理由同上)."""
+
+    def __init__(self, items):
+        super().__init__(items)
+        self._max = max(self) if self else None
+
+    def get(self, d, default=None):
+        if d in self:
+            return super().get(d)
+        if self._max is not None and d > self._max:
+            return super().get(self._max, default)
+        return default
+
+    def __getitem__(self, d):
+        if super().__contains__(d):
+            return super().__getitem__(d)
+        if self._max is not None and d > self._max:
+            return super().__getitem__(self._max)
+        raise KeyError(d)
+
+
 def load_regime():
     df = pd.read_csv(os.path.join(DATA_DIR, "_TWII.csv"), parse_dates=["date"])
     df["ma60"] = df["close"].rolling(60).mean()
-    return set(df.loc[df["close"] > df["ma60"], "date"])
+    return _FwdFillSet(df.loc[df["close"] > df["ma60"], "date"])
 
 
 def load_regime_tiers():
@@ -108,7 +150,7 @@ def load_regime_tiers():
             tiers[row.date] = 0   # 防禦
         else:
             tiers[row.date] = 1   # 盤整/過渡
-    return tiers
+    return _FwdFillDict(tiers)
 
 
 def load_vol_scalars():
@@ -127,7 +169,7 @@ def load_vol_scalars():
         else:
             s = VOL_TARGET / row.vol20
             scalars[row.date] = max(0.5, min(VOL_CAP, s))
-    return scalars
+    return _FwdFillDict(scalars)
 
 
 def compute_rs_rank(data):
