@@ -957,6 +957,93 @@ def signal_i(df, i, rs_rank=None):
     }
 
 
+# ─────────────────────────────────────────────────────────────
+# 策略 J — 動能點火 (Volume-Thrust Ignition) · 專抓飆股, 與 C/D 互補
+# ─────────────────────────────────────────────────────────────
+# 設計動機 (diag_rocket_block.py 診斷結論): C/D 的 VCP 哲學「先量縮、再突破」
+# 本質上排斥真飆股 — 飆股起漲當天就是「爆量 + 大漲 + 創新高」(量能/波動「擴張」,
+# 正是 contraction<1.0 與 vol_dryup 兩個濾網會擋掉的特徵)。近三年 C/D 對 1766
+# 次飆股事件 (60 日內漲 >=80%) 只抓到 2.4%。J 不動 C/D, 改用相反的訊號原型:
+#
+#   核心 = 量能擴張 (vol_surge) + 動能點火 (大漲) + 脫離整理創新高,
+#          只在最強勢股 (RS>=0.90) 且多頭結構中, 且「起漲初期」(未過度延伸) 才進。
+#
+# 「精準、不抓一堆非飆股」靠四道同時成立的硬條件 (任一不過即略過):
+#   1. RS >= 0.90      — 只在全市場最強的 10% (飆股必為強勢股)
+#   2. 爆量 >= 3×均量  — 真正的資金點火, 過濾無量假突破 (這是 VCP 反向特徵)
+#   3. 動能點火        — 單日漲 >= min_gain 或 thrust_window 日內急漲 >= thrust_gain
+#   4. 創 base 日新高 + 未過度延伸 (close <= ma50×max_ext) — 抓「起漲」非「追高」
+# 出場: 寬停損 (飆股波動大, 太緊會被洗) + ATR 移動停損讓主升段奔跑 (不賣半,
+#       不套 MA50 全出, 不衝頂出場 — 目標就是吃下整段噴出)。
+J_CONFIG = {
+    "rs_min":         0.90,        # 只做最強勢股
+    "min_turnover":   30_000_000,  # 流動性門檻 (略低於 C/D 的 5000 萬, 以稍早卡位)
+    "min_price":      10.0,
+    "vol_surge":      3.0,         # 當日量 >= 3× 50 日均量 (量能擴張 = VCP 反向)
+    "min_gain":       0.06,        # 單日點火漲幅 >= 6%
+    "thrust_window":  3,           # 或 N 日內
+    "thrust_gain":    0.15,        # 急漲 >= 15% (多日點火)
+    "base_lookback":  50,          # 突破前 50 日整理區高點 (脫離整理創新高)
+    "max_ext_ma50":   1.35,        # close <= ma50×1.35 (起漲初期, 不追過度延伸)
+    "stop_pct":       0.12,        # 寬停損 (飆股波動大)
+    "trail_atr":      3.0,         # 3×ATR 移動停損 (讓主升段奔跑)
+    "gain_cap":       9.99,        # 不限漲幅 (讓利潤奔跑)
+    "max_hold":       120,         # 最長持有 120 日
+}
+
+
+def signal_j(df, i, rs_rank=None):
+    """動能點火 (策略 J) — 爆量大漲突破, 專抓飆股起漲, 與 C/D 互補.
+
+    與 C/D 的 VCP「量縮收縮後突破」相反: J 要的是「量能擴張 + 動能點火」,
+    捕捉 C/D 結構上抓不到的爆發型飆股。靠 RS>=0.90 + 3× 爆量 + 創新高 + 未延伸
+    四道硬條件維持精準 (訊號稀少, 不濫抓非飆股)。出場用寬停損 + ATR 移動停損,
+    目標吃下整段噴出 (不賣半/不 MA50 全出)。
+    """
+    cfg = J_CONFIG
+    if i < 200:
+        return None
+    row = df.iloc[i]
+    if row["close"] < cfg["min_price"]:
+        return None
+    if row["volume"] * row["close"] < cfg["min_turnover"]:
+        return None
+    if rs_rank is None or np.isnan(rs_rank) or rs_rank < cfg["rs_min"]:
+        return None
+    if np.isnan(row["ma200"]) or np.isnan(row["vol_ma50"]) or row["vol_ma50"] <= 0:
+        return None
+    if np.isnan(row["atr14"]) or row["atr14"] <= 0:
+        return None
+    # 多頭結構: 過濾下降趨勢中的假爆量 (但不套 C/D 的嚴格 VCP 模板)
+    if not (row["ma50"] > row["ma150"] and row["close"] > row["ma150"]
+            and row["ma200"] > df["ma200"].iloc[i - 21]):
+        return None
+    # 爆量: 量能擴張 (與 VCP vol_dryup 相反) — 真正的資金點火
+    vol_surge = row["volume"] / row["vol_ma50"]
+    if vol_surge < cfg["vol_surge"]:
+        return None
+    # 動能點火: 單日大漲 或 多日急漲
+    day_gain = row["close"] / df["close"].iloc[i - 1] - 1.0
+    thrust = row["close"] / df["close"].iloc[i - cfg["thrust_window"]] - 1.0
+    if day_gain < cfg["min_gain"] and thrust < cfg["thrust_gain"]:
+        return None
+    # 突破: 創 base_lookback 日新高 (脫離整理區, 主升段起點)
+    prior_high = df["high"].iloc[i - cfg["base_lookback"]:i].max()
+    if row["close"] <= prior_high:
+        return None
+    # 不追過度延伸: 已大漲一段就不追, 確保抓的是「起漲」
+    if row["close"] > row["ma50"] * cfg["max_ext_ma50"]:
+        return None
+    return {
+        "score":     rs_rank + min(vol_surge, 20) / 100.0,  # 量越大排序越前
+        "stop_pct":  cfg["stop_pct"],
+        "trail_atr": cfg["trail_atr"],
+        "gain_cap":  cfg["gain_cap"],
+        "max_hold":  cfg["max_hold"],
+    }
+
+
 STRATEGIES = {"A": signal_a, "C": signal_c, "D": signal_d, "E": signal_e,
               "F": signal_f, "G": signal_g, "H": signal_h, "I": signal_i,
+              "J": signal_j,
               "PA": signal_pa, "PB": signal_pb, "PC": signal_pc}
