@@ -1051,6 +1051,8 @@ def signal_j(df, i, rs_rank=None):
         "trail_atr": cfg["trail_atr"],
         "gain_cap":  cfg["gain_cap"],
         "max_hold":  cfg["max_hold"],
+        "vol_surge": vol_surge,                         # 供 tune_j_volrank.py 重排序實驗用
+        "turnover":  row["volume"] * row["close"],
     }
 
 
