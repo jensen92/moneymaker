@@ -34,6 +34,12 @@ import subprocess
 import threading
 import time
 
+# 在任何子模組 (strategies/backtest) 匯入 pandas 之前, 先停用與 numpy 2.x 不相容的
+# 選用加速套件 (numexpr/bottleneck), 避免掃描時噴 "compiled using NumPy 1.x" 一大串.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import env_guard
+env_guard.apply(verbose=True)
+
 import requests
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()

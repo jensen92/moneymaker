@@ -1,3 +1,11 @@
 pandas>=2.0
 numpy>=1.24
 requests>=2.28
+
+# 選用 (pandas 的加速器). 非必要; 若安裝, 版本必須與 numpy 相容:
+#   numpy 2.x 需搭配 numexpr>=2.10 與 bottleneck>=1.4。
+# 若你的環境 (常見於 anaconda) 噴 "compiled using NumPy 1.x cannot be run in NumPy 2.x",
+# 表示這兩個是舊版 numpy 1.x 編譯品 → 執行 `python3 doctor.py` 取得修復指令,
+# 或直接 `pip uninstall -y numexpr bottleneck` (移除後 pandas 仍正常)。
+# numexpr>=2.10
+# bottleneck>=1.4

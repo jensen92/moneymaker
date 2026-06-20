@@ -130,3 +130,51 @@ journalctl -u mmbot -f          # 看 log
 - 想只用 GitHub Actions：把雲端機器人的 `TELEGRAM_CHAT_ID` 留著供互動指令用，
   但可在 `telegram_bot.py` 註解掉 `threading.Thread(target=scheduler_loop...)` 那行。
 - 想只用機器人：在 GitHub repo 的 Actions 頁面停用該 workflow。
+
+---
+
+## 8. 圖像化儀表板 (webapp.py)
+
+把分析數值畫成圖表的本地網頁 (權益曲線 / 月度損益 / R 值分布 / 交易清單)，
+純 Python 標準庫 + Chart.js (CDN)，**不需安裝 matplotlib/flask**。
+
+```bash
+export MM_DATA_DIR=/path/to/data_adj
+python3 webapp.py --build C,D K,L   # 先預算快取 (整組回測, 每組約十餘分鐘)
+python3 webapp.py                   # 啟動伺服器 (預設 8800), 讀快取秒開
+# 瀏覽器開 http://localhost:8800 (手機/區網用本機 IP 取代 localhost)
+```
+
+| 變數 | 說明 |
+|------|------|
+| `MM_WEB_PORT` | 網頁 port (預設 8800) |
+| `MM_WEB_URL`  | 對外網址 (內網 IP 或 ngrok)。設了之後 Telegram `/chart` 會回可點連結 |
+
+Telegram 端: `/chart` 指令或選單「📊 圖像化儀表板」按鈕會回傳連結。
+網頁只讀磁碟快取, 不在請求中跑十餘分鐘回測; 建議每日盤後排程 `python3 webapp.py --build ...`。
+
+---
+
+## 9. 疑難排解: 「compiled using NumPy 1.x cannot be run in NumPy 2.x」
+
+掃描/回測時若噴出一大串：
+
+```
+A module that was compiled using NumPy 1.x cannot be run in NumPy 2.2.6 ...
+AttributeError: _ARRAY_API not found   (numexpr / bottleneck)
+```
+
+**原因**: `numexpr` / `bottleneck` 是 pandas 的選用加速器, 你的環境 (常見於 anaconda)
+把 numpy 升到 2.x, 但這兩個還是 numpy 1.x 編譯的舊版 → ABI 不相容。**不是程式碼問題。**
+
+**機器人已內建防護**: `telegram_bot.py` / `webapp.py` 啟動時會用 `env_guard.py`
+自動停用任何壞掉的加速套件, pandas 照常運作, 掃描不會再噴這串。
+
+**根治 (擇一, 建議由上往下)**:
+
+```bash
+python3 doctor.py                                   # 先看健檢與建議指令
+pip uninstall -y numexpr bottleneck                 # 最簡單・零風險 (pandas 仍正常)
+pip install --upgrade 'numexpr>=2.10' 'bottleneck>=1.4'   # 或升級到相容版
+conda install -c conda-forge numexpr bottleneck     # anaconda 使用者
+```

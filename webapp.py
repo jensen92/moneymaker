@@ -27,6 +27,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+# 在匯入 backtest (→ pandas) 之前先停用與 numpy 2.x 不相容的選用加速套件
+import env_guard
+env_guard.apply()
+
 DATA_DIR = os.environ.get("MM_DATA_DIR", "").strip()
 CACHE_DIR = os.path.join(HERE, "web_cache")
 
