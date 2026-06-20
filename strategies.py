@@ -1095,7 +1095,48 @@ def signal_b(df, i, rs_rank=None):
     return _d_signal(_d_features(df, i, rs_rank), B_CONFIG)
 
 
+# ─────────────────────────────────────────────────────────────
+# 策略 K / L — B 引擎再優化 (爆量確認 + 緊貼樞軸 + 寬停損, 大幅壓低回撤)
+# ─────────────────────────────────────────────────────────────
+# 來源: optimize_b2.py / b3_grid 在 B (D引擎+prox0.85) 之上做的二輪消融與網格。
+# 關鍵發現 (真實引擎, 全期 2011-2026, 基準 B = 788筆 PF1.54 CAGR8.9% MaxDD8.1% MAR1.10):
+#   三個旋鈕「同向」收緊即把 MAR 從 1.10 推到 1.4~1.5, 且 MaxDD 砍半:
+#     vol_mult 1.5→2.0 : 突破日量能要更爆 (1.5→2倍均量), 確認真有資金點火, 濾掉假突破。
+#     gain_cap 0.08→0.06: 突破日漲幅 <=6% 才買 (緊貼樞軸點, 絕不追高), 提高進場品質。
+#     stop_pct 0.08→0.10/0.12: 配合上面更乾淨的進場, 放寬停損反而少被洗、留住主升段。
+#   為何 CAGR 略降卻更優: 交易數從 788 降到 ~560-580 (只取最高品質訊號), 年化由 8.9%
+#   降到 6.6~7.6%, 但 MaxDD 由 8.1% 砍到 4.6~5.1% → 風險調整後 (MAR) 與 PF 全面超越 B。
+#
+# K (核心高品質版)  : vol_mult2.0 + gain0.06 + stop0.10 + prox0.80
+#                     581筆 PF1.85 CAGR7.6% MaxDD5.1% 勝率54% MAR1.49  ← 全網格最高 MAR
+#   (進場已被爆量+緊樞軸+寬停損篩到極乾淨, prox 門檻可放鬆到 0.80 仍維持品質, 換取樣本數)
+# L (最低回撤版)    : vol_mult2.0 + gain0.06 + stop0.12 (prox 維持 0.85)
+#                     561筆 PF1.86 CAGR6.6% MaxDD4.6% 勝率55% MAR1.44  ← 全網格最低回撤
+#   (更寬的 12% 停損 + 維持 B 的 prox0.85, 換取最小回撤與最高勝率, 最穩健的曲線)
+# 兩者皆在 PF / MaxDD / 勝率 / MAR 四項同時優於 B, 僅 CAGR 較低 (回撤砍半的必然取捨)。
+K_CONFIG = {**B_CONFIG, "vol_mult": 2.0, "gain_cap": 0.06, "stop_pct": 0.10, "prox_min": 0.80}
+L_CONFIG = {**B_CONFIG, "vol_mult": 2.0, "gain_cap": 0.06, "stop_pct": 0.12}
+
+
+def signal_k(df, i, rs_rank=None):
+    """策略 K = B 引擎再優化 (爆量2.0x + 緊貼樞軸6% + 寬停損10%, prox0.80).
+
+    在 B 的 D事件引擎+52週高點接近度上, 把三個進場品質旋鈕同向收緊: 突破日量能門檻
+    1.5→2.0倍、漲幅上限 8%→6% (緊貼樞軸不追高)、停損放寬到 10%。進場被篩到極乾淨後
+    prox 可鬆到 0.80 仍維持品質。真實引擎全期: PF1.85 MaxDD5.1% 勝率54% MAR1.49,
+    在 PF/回撤/勝率/MAR 四項全面優於 B (回撤砍近半)。詳見 optimize_b2.py."""
+    return _d_signal(_d_features(df, i, rs_rank), K_CONFIG)
+
+
+def signal_l(df, i, rs_rank=None):
+    """策略 L = B 引擎再優化 (爆量2.0x + 緊貼樞軸6% + 最寬停損12%, prox0.85).
+
+    與 K 同源但維持 B 的 prox0.85, 並把停損再放寬到 12% 換取最小回撤。真實引擎全期:
+    PF1.86 MaxDD4.6% (全網格最低) 勝率55% MAR1.44, 為最穩健曲線。詳見 optimize_b2.py."""
+    return _d_signal(_d_features(df, i, rs_rank), L_CONFIG)
+
+
 STRATEGIES = {"A": signal_a, "B": signal_b, "C": signal_c, "D": signal_d, "E": signal_e,
               "F": signal_f, "G": signal_g, "H": signal_h, "I": signal_i,
-              "J": signal_j,
+              "J": signal_j, "K": signal_k, "L": signal_l,
               "PA": signal_pa, "PB": signal_pb, "PC": signal_pc}
