@@ -355,6 +355,10 @@ def _d_features(df, i, rs_rank):
         "breakout":     row["close"] > prior_high20,
         "vol_surge":    (row["volume"] / volma) if volma and volma > 0 else 0.0,
         "gain":         row["close"] / prev["close"] - 1.0,
+        # ── 策略 B 增強用特徵 (實證: 52週高點接近度最佳因子 / 量增價穩 / 季節性) ──
+        "prox_52wh":    row["close"] / row["high252"] if row["high252"] > 0 else 0.0,
+        "day_range":    (row["high"] - row["low"]) / row["close"] if row["close"] > 0 else 9.9,
+        "month":        df["date"].iloc[i].month,
     }
 
 
@@ -371,6 +375,13 @@ def _d_signal(feat, cfg):
     if not (feat["breakout"]
             and feat["vol_surge"] > cfg["vol_mult"]
             and feat["gain"] <= cfg["gain_cap"]):
+        return None
+    # ── 策略 B 選用增強門檻 (D 不設這些 key, 完全向後相容) ──
+    if cfg.get("prox_min") is not None and feat.get("prox_52wh", 0.0) < cfg["prox_min"]:
+        return None
+    if cfg.get("skip_months") and feat.get("month") in cfg["skip_months"]:
+        return None
+    if cfg.get("max_day_range") is not None and feat.get("day_range", 9.9) > cfg["max_day_range"]:
         return None
     sig = {
         "score":           feat["rank"],
@@ -1056,7 +1067,24 @@ def signal_j(df, i, rs_rank=None):
     }
 
 
-STRATEGIES = {"A": signal_a, "C": signal_c, "D": signal_d, "E": signal_e,
+# ─────────────────────────────────────────────────────────────
+# 策略 B — D 引擎 + 全市場實證增強 (52週高點接近度 / 量增價穩 / 季節避險)
+# ─────────────────────────────────────────────────────────────
+# 來自 35 因子 + 台股習性大規模驗證 (見 FIB_RETRACE_TEST.md / STRATEGY_AUDIT.md):
+#   - 純橫斷面選股因子天花板 ~MAR 0.5, 全部輸 D 的事件風控引擎 (MAR 0.99)。
+#   - 其中最佳「選股訊號」是 52週高點接近度 (M/X2, MAR 0.50~0.52)。
+#   - 量增價穩 (Z1) 是全場第二低回撤特徵; 9-10月個股報酬實測轉弱 (季節習性E)。
+# 故 B = 不另起爐灶, 直接站在 D 的進場+風控引擎上, 疊加上述三個「能提升 MAR 才留」
+# 的增強門檻。實際保留哪些, 由 optimize_b.py 消融實測決定 (見該檔結論)。
+B_CONFIG = dict(D_CONFIG)  # 由 optimize_b.py 消融後填入最佳增強參數
+
+
+def signal_b(df, i, rs_rank=None):
+    """D 引擎 + 實證增強 (52週高點接近度 / 量增價穩 / 季節避險). 參數見 B_CONFIG."""
+    return _d_signal(_d_features(df, i, rs_rank), B_CONFIG)
+
+
+STRATEGIES = {"A": signal_a, "B": signal_b, "C": signal_c, "D": signal_d, "E": signal_e,
               "F": signal_f, "G": signal_g, "H": signal_h, "I": signal_i,
               "J": signal_j,
               "PA": signal_pa, "PB": signal_pb, "PC": signal_pc}
