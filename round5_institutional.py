@@ -40,16 +40,18 @@ def score_Z2(P, turnover20):
 
 
 def month_start_score(P, R):
-    is_start = pd.Series(P.index, index=P.index).groupby(P.index.to_period("M")).rank() <= 3
-    masked = R.where(is_start.values[:, None], 0.0)
+    is_start = pd.Series(np.arange(len(P.index)), index=P.index).groupby(P.index.to_period("M")).rank() <= 3
+    mask = pd.DataFrame(np.tile(is_start.values[:, None], (1, R.shape[1])), index=R.index, columns=R.columns)
+    masked = R.where(mask, 0.0)
     return masked.rolling(252).sum()
 
 
 def quarter_end_score(P, R):
     qper = P.index.to_period("Q")
-    rank_from_end = pd.Series(P.index, index=P.index).groupby(qper).rank(ascending=False)
+    rank_from_end = pd.Series(np.arange(len(P.index)), index=P.index).groupby(qper).rank(ascending=False)
     is_end = rank_from_end <= 10
-    masked = R.where(is_end.values[:, None], 0.0)
+    mask = pd.DataFrame(np.tile(is_end.values[:, None], (1, R.shape[1])), index=R.index, columns=R.columns)
+    masked = R.where(mask, 0.0)
     return masked.rolling(252).sum()
 
 
