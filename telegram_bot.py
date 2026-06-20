@@ -16,8 +16,13 @@
     /picks              今日選股
     /analyze 2330       分析個股現況 + 進出場價格 (自動更新資料)
     /backtest [C,D]     組合回測 (慢, 數分鐘)
+    /chart              取得圖像化儀表板連結 (權益曲線/月損益/R分布/交易清單)
     /status             機器人 / 資料狀態
     /help               指令說明
+
+圖像化儀表板 (webapp.py): 另開終端執行 `python3 webapp.py`, 瀏覽器開
+http://<機器IP>:8800 即可看圖表化分析。設定環境變數 MM_WEB_URL 可讓
+/chart 直接回傳可點擊連結 (例如內網位址或 ngrok 網址)。
 """
 import csv
 import datetime as _dt
@@ -34,6 +39,8 @@ import requests
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 ALLOWED_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 DATA_DIR = os.environ.get("MM_DATA_DIR", "").strip()
+WEB_URL = os.environ.get("MM_WEB_URL", "").strip()
+WEB_PORT = os.environ.get("MM_WEB_PORT", "8800").strip()
 HERE = os.path.dirname(os.path.abspath(__file__))
 API = f"https://api.telegram.org/bot{TOKEN}"
 YF_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
@@ -56,9 +63,15 @@ def send(chat_id, text):
 
 
 def send_keyboard(chat_id, text, rows):
-    """送出帶 inline 按鈕的訊息. rows: list[list[(label, callback_data)]]."""
-    keyboard = [[{"text": lbl, "callback_data": cb} for lbl, cb in row]
-                for row in rows]
+    """送出帶 inline 按鈕的訊息. rows: list[list[(label, data)]].
+
+    data 以 http(s):// 開頭視為連結按鈕 (url), 否則視為 callback_data。
+    """
+    def _btn(lbl, data):
+        if data.startswith("http://") or data.startswith("https://"):
+            return {"text": lbl, "url": data}
+        return {"text": lbl, "callback_data": data}
+    keyboard = [[_btn(lbl, cb) for lbl, cb in row] for row in rows]
     try:
         requests.post(f"{API}/sendMessage",
                       data={"chat_id": chat_id, "text": text,
@@ -79,13 +92,27 @@ def answer_callback(callback_id, text=""):
         print("answer_callback error:", e)
 
 
+def _web_url():
+    return WEB_URL or f"http://localhost:{WEB_PORT}"
+
+
 def send_menu(chat_id):
-    send_keyboard(chat_id, "📊 策略機器人選單 — 點選功能直接執行:", [
+    rows = [
         [("📋 全市場掃描", "scan")],
         [("📈 本年度進出清單", "year")],
+        [("📊 圖像化儀表板", "chart")],
         [("🧠 策略設計說明", "info")],
         [("📊 機器人狀態", "status")],
-    ])
+    ]
+    send_keyboard(chat_id, "📊 策略機器人選單 — 點選功能直接執行:", rows)
+
+
+def chart_text():
+    url = _web_url()
+    note = "" if WEB_URL else "\n(未設定 MM_WEB_URL, 此為本機網址, 手機需用內網IP或ngrok才能開)"
+    return (f"📊 圖像化儀表板\n{url}\n\n"
+            f"頁面含: 權益曲線 / 月度損益 / R值分布 / 交易清單, 可切換策略組合 (例如 C,D 或 K,L)。\n"
+            f"需先在伺服器執行: python3 webapp.py{note}")
 
 
 def send_get_id(chat_id, text):
@@ -780,6 +807,7 @@ HELP = (
     "/picks              今日選股\n"
     "/analyze 2330       個股分析 + 進出場價格\n"
     "/backtest [C,D]     組合回測 (慢, 數分鐘)\n"
+    "/chart              圖像化儀表板連結 (權益曲線/月損益/R分布)\n"
     "/status             資料 / 機器人狀態\n"
     "/help               顯示此說明\n"
     "(每日 08:00 自動全市場掃描並推播)"
@@ -818,6 +846,8 @@ def handle(chat_id, text):
     elif cmd == "scan":
         threading.Thread(target=scan_job, args=(chat_id,),
                          daemon=True).start()
+    elif cmd == "chart":
+        send_keyboard(chat_id, chart_text(), [[("🔗 開啟儀表板", _web_url())]])
     elif cmd == "analyze":
         if not args:
             send(chat_id, "用法: /analyze 2330")
@@ -836,6 +866,8 @@ def handle_callback(chat_id, data):
     elif data == "year":
         threading.Thread(target=year_job, args=(chat_id, "C,D"),
                          daemon=True).start()
+    elif data == "chart":
+        send_keyboard(chat_id, chart_text(), [[("🔗 開啟儀表板", _web_url())]])
     elif data == "info":
         send(chat_id, STRATEGY_INFO)
     elif data == "status":
