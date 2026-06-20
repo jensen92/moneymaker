@@ -1076,11 +1076,22 @@ def signal_j(df, i, rs_rank=None):
 #   - 量增價穩 (Z1) 是全場第二低回撤特徵; 9-10月個股報酬實測轉弱 (季節習性E)。
 # 故 B = 不另起爐灶, 直接站在 D 的進場+風控引擎上, 疊加上述三個「能提升 MAR 才留」
 # 的增強門檻。實際保留哪些, 由 optimize_b.py 消融實測決定 (見該檔結論)。
-B_CONFIG = dict(D_CONFIG)  # 由 optimize_b.py 消融後填入最佳增強參數
+# optimize_b.py 消融實測結論 (真實引擎, 全期 2011-2026):
+#   D 基準                 : 806筆 PF1.46 CAGR8.3% MaxDD8.4% MAR0.99
+#   +prox_min 0.85 (採用)  : 788筆 PF1.54 CAGR8.9% MaxDD8.1% MAR1.10  ← 全維度勝 D
+#   +prox_min 0.95         : 734筆 PF1.64 CAGR10.2% MaxDD9.3% MAR1.10 (CAGR高但回撤反升)
+#   +max_day_range/skip月  : 全部使 MAR 下降 (振幅/季節屬防禦或時序效應, 不宜當進場硬門檻)
+# 取 prox_min=0.85: 唯一在 CAGR/MaxDD/PF/勝率「同時」優於 D 的設定 (嚴格佔優),
+# 交易數仍 788 (最不易過擬合)。增強來源: 52週高點接近度為 35因子驗證中最佳選股訊號。
+B_CONFIG = {**D_CONFIG, "prox_min": 0.85}
 
 
 def signal_b(df, i, rs_rank=None):
-    """D 引擎 + 實證增強 (52週高點接近度 / 量增價穩 / 季節避險). 參數見 B_CONFIG."""
+    """策略 B = D 事件引擎 + 52週高點接近度增強 (收盤 >= 52週高 * 0.85).
+
+    在 D 已驗證的趨勢模板+波動收縮突破+全套風控 (停損/集中/市況/波動) 上, 疊加
+    全市場實證最佳選股因子 (52週高點接近度) 作進場品質門檻。消融顯示此單一增強即
+    使 MAR 0.99→1.10 且回撤不升反降 (8.4%→8.1%), 為嚴格優於 D 的版本。詳見 optimize_b.py."""
     return _d_signal(_d_features(df, i, rs_rank), B_CONFIG)
 
 
