@@ -112,7 +112,9 @@ def chart_text():
     note = "" if WEB_URL else "\n(未設定 MM_WEB_URL, 此為本機網址, 手機需用內網IP或ngrok才能開)"
     return (f"📊 圖像化儀表板\n{url}\n\n"
             f"頁面含: 權益曲線 / 月度損益 / R值分布 / 交易清單, 可切換策略組合 (例如 C,D 或 K,L)。\n"
-            f"需先在伺服器執行: python3 webapp.py{note}")
+            f"伺服器啟動: python3 webapp.py\n"
+            f"首次需先建快取 (整組回測約十餘分鐘): python3 webapp.py --build C,D K,L\n"
+            f"之後網頁秒開; 建議每日盤後排程重建快取。{note}")
 
 
 def send_get_id(chat_id, text):

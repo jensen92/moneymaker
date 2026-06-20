@@ -5,11 +5,13 @@
 
 啟動 (地端測試):
     export MM_DATA_DIR=/path/to/data_adj
-    python3 webapp.py                 # 預設 port 8800
+    python3 webapp.py --build C,D K,L   # 先預算快取 (整組回測, 每組約十餘分鐘)
+    python3 webapp.py                   # 啟動伺服器 (預設 port 8800), 讀快取秒開
     python3 webapp.py --port 9000
 
 開啟 http://localhost:8800 ，上方輸入策略組合 (例如 C,D 或 K,L) 按「重新計算」。
-資料以策略組合為 key 快取在記憶體, 同組合第二次開啟秒回。
+網頁只讀磁碟快取 (web_cache/<組合>.json), 不在請求中跑十餘分鐘回測卡住瀏覽器。
+若該組合尚無快取, 頁面會提示先跑 --build; 建議每日盤後排程重建快取保持最新。
 
 Telegram 端可用 /chart 指令或選單按鈕取得此頁面連結 (需設定 MM_WEB_URL 環境變數,
 例如內網 IP 或 ngrok 網址, 否則僅顯示 localhost 供本機開啟)。
@@ -26,9 +28,15 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 DATA_DIR = os.environ.get("MM_DATA_DIR", "").strip()
+CACHE_DIR = os.path.join(HERE, "web_cache")
 
 _cache_lock = threading.Lock()
 _cache = {"key": None, "data": None}
+
+
+def _cache_path(strats_str):
+    safe = strats_str.replace(",", "_").replace("/", "").upper()
+    return os.path.join(CACHE_DIR, f"{safe}.json")
 
 
 def _compute(keys):
@@ -100,16 +108,46 @@ def _compute(keys):
             "trade_list": trade_list, "summary": summary}
 
 
-def get_data(strats_str):
-    with _cache_lock:
-        if _cache["key"] == strats_str:
-            return _cache["data"]
-    keys = [s.strip().upper() for s in strats_str.split(",") if s.strip()]
+def _normkey(strats_str):
+    return ",".join(s.strip().upper() for s in strats_str.split(",") if s.strip())
+
+
+def build_cache(strats_str):
+    """重算並寫入磁碟快取 (供 --build 與每日排程呼叫). 回傳結果 dict."""
+    key = _normkey(strats_str)
+    keys = key.split(",")
     result = _compute(keys)
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(_cache_path(key), "w") as f:
+        json.dump(result, f, default=float)
     with _cache_lock:
-        _cache["key"] = strats_str
+        _cache["key"] = key
         _cache["data"] = result
     return result
+
+
+def get_data(strats_str, allow_compute=True):
+    """取資料: 記憶體快取 → 磁碟快取 → (允許時) 即時重算.
+
+    即時重算很慢 (整組回測, 約十餘分鐘), 故正常流程應先用 --build 預先產生磁碟快取,
+    讓網頁秒開。allow_compute=False 時無快取則回傳提示而非卡住瀏覽器。
+    """
+    key = _normkey(strats_str)
+    with _cache_lock:
+        if _cache["key"] == key:
+            return _cache["data"]
+    path = _cache_path(key)
+    if os.path.exists(path):
+        with open(path) as f:
+            result = json.load(f)
+        with _cache_lock:
+            _cache["key"] = key
+            _cache["data"] = result
+        return result
+    if not allow_compute:
+        return {"error": f"尚無 {key} 的快取, 請先執行: python3 webapp.py --build {key}",
+                "summary": {}, "curve": [], "monthly": [], "r_dist": [], "trade_list": []}
+    return build_cache(key)
 
 
 HTML_PAGE = """<!doctype html>
@@ -173,7 +211,7 @@ function fmt(n) { return Number(n).toLocaleString(); }
 async function reload() {
   const strats = document.getElementById('strats').value || 'C,D';
   const status = document.getElementById('status');
-  status.textContent = '⏳ 計算中 (首次約數十秒)...';
+  status.textContent = '⏳ 載入快取...';
   try {
     const r = await fetch('/api/data?strats=' + encodeURIComponent(strats));
     const j = await r.json();
@@ -273,8 +311,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_html(HTML_PAGE)
         elif parsed.path == "/api/data":
             strats = qs.get("strats", ["C,D"])[0]
+            # 預設只讀快取, 不在請求執行緒裡跑十餘分鐘回測卡死瀏覽器;
+            # 帶 ?compute=1 才允許即時重算 (使用者明知要等)。
+            allow = qs.get("compute", ["0"])[0] == "1"
             try:
-                self._send_json(get_data(strats))
+                self._send_json(get_data(strats, allow_compute=allow))
             except Exception as e:  # noqa: BLE001
                 self._send_json({"error": str(e)}, 500)
         else:
@@ -287,6 +328,17 @@ def main():
     args = sys.argv[1:]
     if "--port" in args:
         port = int(args[args.index("--port") + 1])
+    if "--build" in args:
+        # 預先重算指定策略組合 (可多組, 逗號分隔), 寫入磁碟快取後結束。
+        # 每日盤後排程建議: python3 webapp.py --build C,D K,L D
+        combos = [a for a in args[args.index("--build") + 1:] if not a.startswith("-")]
+        if not combos:
+            combos = ["C,D"]
+        for combo in combos:
+            print(f"建立快取 {combo} ... (整組回測, 約十餘分鐘)")
+            r = build_cache(combo)
+            print(f"  完成: {r['summary'].get('trades', 0)} 筆交易 → {_cache_path(_normkey(combo))}")
+        return
     with http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler) as httpd:
         print(f"儀表板啟動: http://localhost:{port}  (區網請用本機 IP 取代 localhost)")
         httpd.serve_forever()
