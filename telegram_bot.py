@@ -278,7 +278,7 @@ def _analyze_stock(code, progress=None):
     from strategies import add_indicators, STRATEGIES
     from backtest import (DATA_DIR as BT_DATA_DIR,
                           load_regime_tiers, load_vol_scalars,
-                          RISK_PCT, INIT_CAPITAL)
+                          RISK_PCT, INIT_CAPITAL, suggested_position)
 
     # 1. 更新個股資料
     note(f"⏳ {code}: 下載最新資料中...")
@@ -413,27 +413,22 @@ def _analyze_stock(code, progress=None):
         tier_str = {2: "強勢 (全力開倉)", 1: "盤整 (縮手 40%)", 0: "防禦 (停止進場)"}[tier]
         vol_scalars = load_vol_scalars()
         vsca = vol_scalars.get(d, 1.0)
-        eff_risk = RISK_PCT * {2: 1.0, 1: 0.6, 0: 0.0}[tier] * vsca
     except Exception:  # noqa: BLE001
         tier_str = "(無法判斷)"
-        eff_risk = RISK_PCT
+        tier, vsca = 2, 1.0
 
-    # 7. 進出場參考
+    # 7. 進出場參考 (與 run_sub 一致: 市況×波動有效風險 + minervini 25% 上限)
     signal_lines = []
     for key, sig in results.items():
         if sig:
-            stop_pct = sig.get("stop_pct", 0.08)
             ref = close          # 以今日收盤估算明日進場
-            stop = ref * (1 - stop_pct)
-            risk_amt = INIT_CAPITAL * eff_risk
-            risk_per_sh = ref - stop
-            shares = int(risk_amt / risk_per_sh / 1000) * 1000 if risk_per_sh > 0 else 0
-            if shares <= 0:
-                shares = max(1, int(risk_amt / risk_per_sh)) if risk_per_sh > 0 else 0
+            pos = suggested_position(INIT_CAPITAL, ref, sig,
+                                     tier=tier, vol_scalar=vsca)
             signal_lines.append(
                 f"  策略{key}: ✅ 訊號觸發\n"
-                f"    參考進場: {ref:.1f}  停損: {stop:.1f} (-{stop_pct:.0%})\n"
-                f"    建議股數: {shares:,}  最長持有: {sig['max_hold']} 日"
+                f"    參考進場: {ref:.1f}  停損: {pos['stop']:.1f} "
+                f"(-{pos['stop_pct']:.0%})\n"
+                f"    建議股數: {pos['shares']:,}  最長持有: {sig['max_hold']} 日"
             )
         else:
             signal_lines.append(f"  策略{key}: ❌ 條件不符")
@@ -503,7 +498,8 @@ def _scan_all(progress=None, keys=None):
             importlib.reload(sys.modules[mod])
     from strategies import add_indicators, STRATEGIES
     from backtest import (DATA_DIR as BT_DATA_DIR, load_regime_tiers,
-                          load_vol_scalars, RISK_PCT, INIT_CAPITAL)
+                          load_vol_scalars, RISK_PCT, INIT_CAPITAL,
+                          suggested_position)
 
     data_dir = DATA_DIR or BT_DATA_DIR
     names = {}
@@ -551,15 +547,14 @@ def _scan_all(progress=None, keys=None):
             ret_last[c] = df["close"].iloc[-1] / df["close"].iloc[-127] - 1
     ranks = pd.Series(ret_last).rank(pct=True)
 
-    # 大盤市況 → 有效風險係數 (用於估算建議股數)
+    # 大盤市況 → 有效風險係數 (用於估算建議股數, 與 run_sub 一致)
+    latest_d = max(df["date"].iloc[-1] for df in data.values())
     try:
-        latest_d = max(df["date"].iloc[-1] for df in data.values())
         tier = load_regime_tiers().get(latest_d, 2)
         vsca = load_vol_scalars().get(latest_d, 1.0)
-        eff_risk = RISK_PCT * {2: 1.0, 1: 0.6, 0: 0.0}[tier] * vsca
         tier_str = {2: "強勢(全力)", 1: "盤整(縮手)", 0: "防禦(停進)"}[tier]
     except Exception:  # noqa: BLE001
-        eff_risk = RISK_PCT
+        tier, vsca = 2, 1.0
         tier_str = "未知"
 
     note(f"⏳ 套用策略 {'/'.join(keys)}...")
@@ -575,16 +570,13 @@ def _scan_all(progress=None, keys=None):
             continue
         sig = sigs[hit[0]]   # keys 已按嚴格度排序, 取最嚴者的停損/持有規則
         close = df["close"].iloc[-1]
-        stop_pct = sig.get("stop_pct", 0.08)
-        stop = close * (1 - stop_pct)
-        risk_per_sh = close - stop
-        risk_amt = INIT_CAPITAL * eff_risk
-        shares = (int(risk_amt / risk_per_sh / 1000) * 1000
-                  if risk_per_sh > 0 else 0)
+        # 與 run_sub 一致: 有效風險(市況×波動) + minervini 25% 上限
+        pos = suggested_position(INIT_CAPITAL, close, sig,
+                                 tier=tier, vol_scalar=vsca)
         matches.append({
             "code": c, "name": names.get(c, ""), "tag": "+".join(hit),
-            "nhit": len(hit), "close": close, "stop": stop,
-            "stop_pct": stop_pct, "shares": shares,
+            "nhit": len(hit), "close": close, "stop": pos["stop"],
+            "stop_pct": pos["stop_pct"], "shares": pos["shares"],
             "max_hold": sig["max_hold"], "rs": rk,
         })
 

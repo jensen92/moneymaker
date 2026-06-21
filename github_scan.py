@@ -22,7 +22,9 @@ DATA_DIR = os.environ.get("MM_DATA_DIR",
                           os.path.join(os.path.dirname(__file__), "data_adj"))
 bt.DATA_DIR = DATA_DIR
 
-from backtest import load_regime, INIT_CAPITAL, RISK_PCT, PICKS_PER_DAY, compute_rs_rank
+from backtest import (load_regime, load_regime_tiers, load_vol_scalars,
+                      INIT_CAPITAL, RISK_PCT, PICKS_PER_DAY, compute_rs_rank,
+                      suggested_position)
 from strategies import STRATEGIES, add_indicators, _d_features
 
 # .strip() 防止 Secret 值前後夾帶空白/tab 導致 Telegram API 拒絕
@@ -145,6 +147,8 @@ def main():
 
     rs = compute_rs_rank(all_data)
     risk_on = load_regime()
+    regime_tiers = load_regime_tiers()
+    vol_scalars = load_vol_scalars()
 
     candidates = {k: [] for k in SCAN_KEYS}
     latest_date = None
@@ -167,6 +171,9 @@ def main():
 
     today_str = latest_date.strftime("%Y-%m-%d") if latest_date else datetime.now().strftime("%Y-%m-%d")
     regime_ok = latest_date in risk_on
+    # 市況分級 + 波動標量 → 與 run_sub 一致的有效風險 (建議股數用)
+    tier = regime_tiers.get(latest_date, 2)
+    vol_scalar = vol_scalars.get(latest_date, 1.0)
 
     # ── 組成輸出內容 ──
     lines = []
@@ -196,13 +203,13 @@ def main():
                 f"持有{s0['max_hold']}日 · {gain_str}")
             for score, code, df, s in picks:
                 ref = df.iloc[-1]["close"]
-                stop = ref * (1 - stop_pct)
-                shares = int(INIT_CAPITAL * RISK_PCT
-                             / max(ref - stop, 0.01) / 1000) * 1000
+                # 與 run_sub 一致: 有效風險(市況×波動) + minervini 25% 上限
+                pos = suggested_position(INIT_CAPITAL, ref, s,
+                                         tier=tier, vol_scalar=vol_scalar)
                 name = names.get(code, "")
                 lines.append(
-                    f"  {code} {name}　進{ref:.1f} 損{stop:.1f}　"
-                    f"{shares:,}股 RS{score:.2f}")
+                    f"  {code} {name}　進{ref:.1f} 損{pos['stop']:.1f}　"
+                    f"{pos['shares']:,}股 RS{score:.2f}")
             lines.append("")
 
     # ── 近觸發觀察名單 ──

@@ -181,6 +181,44 @@ def compute_rs_rank(data):
     return panel.rank(axis=1, pct=True)
 
 
+def effective_risk(tier=2, vol_scalar=1.0):
+    """與 run_sub 一致的有效風險係數: RISK_PCT × 市況乘數 × 波動標量.
+
+    tier: 2=強勢(1.0) / 1=盤整(0.6) / 0=防禦(0.0)。tier=0 回傳 0 (不進場)。
+    """
+    return RISK_PCT * REGIME_RISK_MULT.get(tier, 1.0) * vol_scalar
+
+
+def suggested_position(equity, entry, sig, tier=2, vol_scalar=1.0, lot=1000):
+    """估算單筆建議部位, 與 run_sub 開倉邏輯完全一致 (供 scan / 每日報告用).
+
+    複製 run_sub 的下單規則: 有效風險 eff_risk = RISK_PCT×市況×波動;
+    停損由 sig 的 stop_pct (或 stop_atr, 此處用 entry 近似) 決定; 風險金額
+    = equity×eff_risk; 股數無條件捨去到整張 (lot); minervini 旗標的策略再套
+    「單檔上限 25% 權益」硬上限 (run_sub line 467-469 同款)。
+
+    回傳 dict: shares / stop / stop_pct / risk_per_sh / eff_risk。
+    eff_risk=0 (防禦市況) 或停損無效時 shares=0。
+    """
+    eff_risk = effective_risk(tier, vol_scalar)
+    stop_pct = sig.get("stop_pct", 0.08)
+    stop = entry * (1 - stop_pct)
+    risk_per_sh = entry - stop
+    out = {"shares": 0, "stop": stop, "stop_pct": stop_pct,
+           "risk_per_sh": risk_per_sh, "eff_risk": eff_risk}
+    if eff_risk <= 0 or risk_per_sh <= 0 or entry <= 0:
+        return out
+    risk_amt = equity * eff_risk
+    shares = int(risk_amt / risk_per_sh / lot) * lot
+    if shares <= 0:
+        shares = max(1, int(risk_amt / risk_per_sh))
+    if sig.get("minervini"):
+        cap = int(equity * 0.25 / entry / lot) * lot   # 單檔上限 25% 權益
+        shares = min(shares, max(cap, 1))
+    out["shares"] = shares
+    return out
+
+
 def collect_signals(data, strategy_key):
     sig_fn = STRATEGIES[strategy_key]
     signals = defaultdict(list)
