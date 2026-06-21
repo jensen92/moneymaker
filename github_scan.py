@@ -30,7 +30,7 @@ from strategies import STRATEGIES, add_indicators, _d_features
 # .strip() 防止 Secret 值前後夾帶空白/tab 導致 Telegram API 拒絕
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-SCAN_KEYS = ["PA", "PB", "D", "C"]
+SCAN_KEYS = ["PA", "PB", "K", "L", "D", "C"]
 PICKS_DIR = Path(__file__).parent / "picks"
 PICKS_DIR.mkdir(exist_ok=True)
 
@@ -181,9 +181,11 @@ def main():
                  f"大盤{'✅多頭' if regime_ok else '⛔偏弱'}")
     lines.append("")
 
-    label = {"PA": "PA 最嚴", "PB": "PB 平衡", "D": "D 原版", "C": "C 寬鬆"}
-    stats = {"PA": "PF3.4 勝57%", "PB": "PF2.5 勝51%",
-             "D": "PF2.0 勝53%", "C": "PF1.8 勝46%"}
+    label = {"PA": "PA 最嚴", "PB": "PB 平衡", "K": "K 策略", "L": "L 策略",
+             "D": "D 原版", "C": "C 寬鬆"}
+    stats = {"PA": "PF2.84 勝54%", "PB": "PF2.25 勝47%",
+             "K": "PF1.93 勝51%", "L": "PF1.97 勝52%",
+             "D": "PF1.46 勝47%", "C": "PF1.58 勝49%"}
 
     if not regime_ok:
         lines.append("今日大盤偏弱，PA/PB/D/C 均不進場")

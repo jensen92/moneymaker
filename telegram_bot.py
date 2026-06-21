@@ -10,7 +10,7 @@
 
 指令 (亦可用 /menu 叫出按鈕選單, 點一下直接執行):
     /menu               叫出按鈕選單
-    /scan               全市場掃描 PA/PB/D/C 清單 + 進出場點位
+    /scan               全市場掃描 PA/PB/K/L/D/C 清單 + 進出場點位
     /year [C,D]         本年度進出清單 (已平倉交易 + 績效摘要)
     /info               策略設計說明
     /picks              今日選股
@@ -58,7 +58,7 @@ API = f"https://api.telegram.org/bot{TOKEN}"
 YF_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
 
 # 與每日報告 (github_scan.py) 一致的掃描策略組合
-SCAN_KEYS = ["PA", "PB", "D", "C"]
+SCAN_KEYS = ["PA", "PB", "K", "L", "D", "C"]
 
 _job_lock = threading.Lock()
 
@@ -479,7 +479,7 @@ def analyze_job(chat_id, code):
 def _scan_all(progress=None, keys=None):
     """掃全市場, 回傳符合 keys 任一策略的清單 (標注複合命中 + 進出場點位).
 
-    keys 預設 = SCAN_KEYS (PA/PB/D/C), 與每日報告一致.
+    keys 預設 = SCAN_KEYS (PA/PB/K/L/D/C), 與每日報告一致.
     """
     keys = keys or SCAN_KEYS
 
@@ -833,7 +833,7 @@ def scheduler_loop():
 HELP = (
     "📈 策略機器人指令 (或輸入 /menu 用按鈕):\n"
     "/menu               叫出按鈕選單\n"
-    "/scan               全市場掃描 PA/PB/D/C 清單 + 進出場點位\n"
+    "/scan               全市場掃描 PA/PB/K/L/D/C 清單 + 進出場點位\n"
     "/year [C,D]         本年度進出清單 + 績效摘要\n"
     "/info               策略設計說明\n"
     "/picks              今日選股\n"
