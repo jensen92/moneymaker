@@ -10,6 +10,7 @@ import pandas as pd
 
 def add_indicators(df):
     df = df.copy()
+    df["ma5"] = df["close"].rolling(5).mean()
     df["ma20"] = df["close"].rolling(20).mean()
     df["ma50"] = df["close"].rolling(50).mean()
     df["ma60"] = df["close"].rolling(60).mean()
