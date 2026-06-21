@@ -30,11 +30,19 @@ def set_market(ret60_map):
     _MARKET_RET60 = ret60_map
 
 
-def _liquid(row, min_turnover=50_000_000, min_price=10.0):
-    """流動性 / 可交易性濾網 (規格 §0.1: 對應日均量>3000張 之名目額代理)."""
-    if row["close"] < min_price:
+# 規格 §0.1 標的池: 限定有掛牌個股期貨之標的 (~200檔). 真實 TAIFEX 清單逐月變動且
+# 有存活者偏差, 故以規格原文的流動性門檻「日均量 > 3000 張」作 STF 標的池的忠實代理:
+# 近50日均量 >= 3,000,000 股, 自然篩到大型權值/高週轉股 (≈ STF 實際標的池)。
+MIN_AVG_VOL_SHARES = 3_000_000   # 3000 張
+MIN_PRICE = 10.0
+
+
+def _liquid(row):
+    """規格 §0.1 標的池濾網: 近50日均量 >= 3000張 (STF 標的池忠實代理) + 價格下限."""
+    if row["close"] < MIN_PRICE:
         return False
-    if row["volume"] * row["close"] < min_turnover:
+    vma = row.get("vol_ma50", np.nan)
+    if np.isnan(vma) or vma < MIN_AVG_VOL_SHARES:
         return False
     return True
 
