@@ -496,7 +496,7 @@ def _scan_all(progress=None, keys=None):
     for mod in ["strategies", "backtest"]:
         if mod in sys.modules:
             importlib.reload(sys.modules[mod])
-    from strategies import add_indicators, STRATEGIES
+    from strategies import add_indicators, STRATEGIES, _d_features
     from backtest import (DATA_DIR as BT_DATA_DIR, load_regime_tiers,
                           load_vol_scalars, RISK_PCT, INIT_CAPITAL,
                           suggested_position)
@@ -558,7 +558,11 @@ def _scan_all(progress=None, keys=None):
         tier_str = "未知"
 
     note(f"⏳ 套用策略 {'/'.join(keys)}...")
+    # 觀察名單門檻: 過趨勢模板 + RS>0.75, 但量縮收斂尚未達標 (差臨門一腳)
+    WATCH_RS = 0.75
+    WATCH_CONTRACTION = 0.85
     matches = []
+    watch = []
     for c, df in data.items():
         i = len(df) - 1
         rk = ranks.get(c)
@@ -567,6 +571,19 @@ def _scan_all(progress=None, keys=None):
         sigs = {k: STRATEGIES[k](df, i, rs_rank=rk) for k in keys}
         hit = [k for k in keys if sigs[k]]
         if not hit:
+            # 無正式訊號 → 評估是否列入近觸發觀察名單
+            if rk >= WATCH_RS:
+                feat = _d_features(df, i, rk)
+                if feat is not None and feat["contraction"] <= WATCH_CONTRACTION:
+                    row = df.iloc[i]
+                    prior_high20 = df["high"].iloc[i - 20: i].max()
+                    near_bo = row["close"] >= prior_high20 * 0.95
+                    watch.append({
+                        "code": c, "name": names.get(c, ""), "rs": rk,
+                        "contraction": feat["contraction"],
+                        "vol_surge": feat["vol_surge"],
+                        "breakout": feat["breakout"], "near_bo": near_bo,
+                    })
             continue
         sig = sigs[hit[0]]   # keys 已按嚴格度排序, 取最嚴者的停損/持有規則
         close = df["close"].iloc[-1]
@@ -582,11 +599,28 @@ def _scan_all(progress=None, keys=None):
 
     # 排序: 複合命中越多越優先, 再依 RS 由高到低
     matches.sort(key=lambda m: (-m["nhit"], -m["rs"]))
+    # 觀察名單: 接近突破者優先, 再依 RS 由高到低, 取前 8 檔
+    watch.sort(key=lambda w: (-int(w["near_bo"]), -w["rs"]))
+
+    def _watch_lines():
+        out = ["", "▍近觸發觀察名單 (RS>0.75 模板✅ 收縮未達)"]
+        if not watch:
+            out.append("  (今日無近觸發候選)")
+            return out
+        for w in watch[:8]:
+            nm = f" {w['name']}" if w["name"] else ""
+            out.append(
+                f"  {w['code']}{nm}  RS{w['rs']:.0%} 收縮{w['contraction']:.2f} "
+                f"量{w['vol_surge']:.1f}x 突破{'✅' if w['breakout'] else '❌'}")
+        return out
 
     # 格式化
     if not matches:
-        return (f"📋 全市場掃描 ({latest_d:%Y-%m-%d})\n大盤: {tier_str}\n\n"
-                f"今日無符合 {'/'.join(keys)} 的標的")
+        lines = [
+            f"📋 全市場掃描 ({latest_d:%Y-%m-%d})  大盤: {tier_str}",
+            f"今日無符合 {'/'.join(keys)} 的標的",
+        ]
+        return "\n".join(lines + _watch_lines())
 
     lines = [
         f"📋 全市場掃描 ({latest_d:%Y-%m-%d})  大盤: {tier_str}",
@@ -600,7 +634,7 @@ def _scan_all(progress=None, keys=None):
             f"[{m['tag']}] {m['code']}{nm}  RS{m['rs']:.0%}\n"
             f"   進場 {m['close']:.1f}  停損 {m['stop']:.1f}"
             f"(-{m['stop_pct']:.0%})  {m['shares']:,}股")
-    return "\n".join(lines)
+    return "\n".join(lines + _watch_lines())
 
 
 def scan_job(chat_id):
