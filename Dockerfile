@@ -1,5 +1,9 @@
-# Telegram 策略機器人 24h 部署用映像
+# Telegram 策略機器人 — 24h 雲端常駐 (Railway / Fly.io / 任何 Docker 主機)
 FROM python:3.11-slim
+
+# 設為台灣時區, 讓機器人的時間判斷與台股一致
+ENV TZ=Asia/Taipei
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 WORKDIR /app
 

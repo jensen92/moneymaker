@@ -1,0 +1,52 @@
+name: 每日期貨訊號 (穀物 ZS/ZW/ZC)
+
+on:
+  schedule:
+    # 台灣時間 09:00 = UTC 01:00，週一至週五 (美盤穀物前一交易日收盤後)
+    - cron: '0 1 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (不發 Telegram，只印結果)'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write   # 需要 push picks/ 檔案
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pandas numpy requests
+
+      - name: Download futures data
+        run: python futures_data.py
+        env:
+          PYTHONUNBUFFERED: "1"
+
+      - name: Run futures scan
+        run: python futures_scan.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Commit picks file
+        run: |
+          git config user.email "noreply@anthropic.com"
+          git config user.name "Claude"
+          git add picks/
+          git diff --staged --quiet || git commit -m "Daily futures picks $(date +%Y-%m-%d)"
+          git pull --rebase origin main || true
+          git push

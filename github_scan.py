@@ -1,4 +1,4 @@
-"""GitHub Actions 每日選股腳本: PA + PB + D 三策略掃描, 結果發 Telegram + 存 picks/.
+"""GitHub Actions 每日選股腳本: PA + PB + D + C 四策略掃描 + 近觸發觀察名單.
 
 環境變數:
   TELEGRAM_BOT_TOKEN  Telegram bot token
@@ -25,8 +25,9 @@ bt.DATA_DIR = DATA_DIR
 from backtest import load_regime, INIT_CAPITAL, RISK_PCT, PICKS_PER_DAY, compute_rs_rank
 from strategies import STRATEGIES, add_indicators, _d_features
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
+# .strip() 防止 Secret 值前後夾帶空白/tab 導致 Telegram API 拒絕
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 SCAN_KEYS = ["PA", "PB", "D", "C"]
 PICKS_DIR = Path(__file__).parent / "picks"
 PICKS_DIR.mkdir(exist_ok=True)
@@ -39,8 +40,10 @@ def send_telegram(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     for chunk in _split(text, 4000):
         try:
-            requests.post(url, json={"chat_id": CHAT_ID, "text": chunk,
-                                     "parse_mode": "HTML"}, timeout=15)
+            r = requests.post(url, json={"chat_id": CHAT_ID, "text": chunk,
+                                         "parse_mode": "HTML"}, timeout=15)
+            if not r.ok:
+                print(f"[Telegram] API 錯誤 {r.status_code}: {r.text[:300]}")
         except Exception as e:
             print(f"[Telegram] 發送失敗: {e}")
         time.sleep(0.3)
@@ -83,10 +86,9 @@ def load_all_data():
 
 
 def _build_watchlist(all_data, names, rs, latest_date):
-    """找出通過趨勢模板、RS > 0.75，但收縮或突破條件尚未達標的股票。"""
-    # 最寬鬆門檻 (C_CONFIG): contraction < 0.80, rs_min = 0.80
+    """找出通過趨勢模板、RS > 0.75，但收縮尚未達標 (0.80–0.85) 的股票."""
     WATCH_RS = 0.75
-    WATCH_CONTRACTION = 0.85   # 比門檻寬一點的觀察區間
+    WATCH_CONTRACTION = 0.85
 
     candidates = []
     for code, df in all_data.items():
@@ -105,14 +107,13 @@ def _build_watchlist(all_data, names, rs, latest_date):
 
         feat = _d_features(df, i, rk)
         if feat is None:
-            continue  # 未過模板，略過
+            continue
 
-        # 已有任一策略訊號 → 不加入觀察 (已在主清單)
+        # 已有任一策略訊號 → 已在主清單，不重複列入
         already = any(STRATEGIES[k](df, i, rs_rank=rk) for k in SCAN_KEYS)
         if already:
             continue
 
-        # 只收縮差距在 0.05 以內，或突破接近（前20高的95%以內）
         ctr = feat["contraction"]
         if ctr > WATCH_CONTRACTION:
             continue
@@ -132,7 +133,6 @@ def _build_watchlist(all_data, names, rs, latest_date):
             "near_bo":     near_breakout,
         })
 
-    # 排序: 優先近突破 + RS 高
     candidates.sort(key=lambda x: (-int(x["near_bo"]), -x["rs"]))
     return candidates[:10]
 
@@ -170,61 +170,54 @@ def main():
 
     # ── 組成輸出內容 ──
     lines = []
-    lines.append(f"📊 <b>每日選股報告 {today_str}</b>")
-    lines.append(f"大盤狀態: {'✅ 多頭 (可進場)' if regime_ok else '⛔ 偏弱 (今日不進場)'}")
+    lines.append(f"📊 <b>每日選股 {today_str}</b>　"
+                 f"大盤{'✅多頭' if regime_ok else '⛔偏弱'}")
     lines.append("")
 
-    label = {"PA": "PA 最嚴 (PF3.4/勝率57%)",
-             "PB": "PB 平衡 (PF2.5/勝率51%)",
-             "D":  "D  原版 (PF2.0/勝率53%)",
-             "C":  "C  寬鬆 (PF1.8/勝率46%)"}
+    label = {"PA": "PA 最嚴", "PB": "PB 平衡", "D": "D 原版", "C": "C 寬鬆"}
+    stats = {"PA": "PF3.4 勝57%", "PB": "PF2.5 勝51%",
+             "D": "PF2.0 勝53%", "C": "PF1.8 勝46%"}
 
-    for key in SCAN_KEYS:
-        lines.append(f"<b>【策略 {label[key]}】</b>")
-        if not regime_ok:
-            lines.append("  今日大盤不符合進場條件")
-            lines.append("")
-            continue
-        picks = sorted(candidates[key], reverse=True)[:PICKS_PER_DAY]
-        if not picks:
-            lines.append("  (今日無訊號)")
-            lines.append("")
-            continue
-        for score, code, df, s in picks:
-            row = df.iloc[-1]
-            ref = row["close"]
-            stop_pct = s.get("stop_pct", 0.08)
-            stop = ref * (1 - stop_pct)
-            risk_amt = INIT_CAPITAL * RISK_PCT
-            shares = int(risk_amt / max(ref - stop, 0.01) / 1000) * 1000
-            name = names.get(code, "")
-            gain_cap = s.get("gain_cap", 9.99)
-            gain_str = f"突破漲幅上限 {gain_cap:.0%}" if gain_cap < 9 else "讓利潤奔跑"
-            lines.append(
-                f"  <b>{code} {name}</b>\n"
-                f"    參考進場: {ref:.2f}  停損: {stop:.2f} (-{stop_pct:.0%})\n"
-                f"    建議股數: {shares:,} 股  RS: {score:.2f}\n"
-                f"    最長持有: {s['max_hold']} 日  出場: {gain_str}"
-            )
+    if not regime_ok:
+        lines.append("今日大盤偏弱，PA/PB/D/C 均不進場")
         lines.append("")
+    else:
+        for key in SCAN_KEYS:
+            picks = sorted(candidates[key], reverse=True)[:PICKS_PER_DAY]
+            if not picks:
+                lines.append(f"<b>▍{label[key]}</b> {stats[key]}　(無訊號)")
+                continue
+            s0 = picks[0][3]
+            stop_pct = s0.get("stop_pct", 0.08)
+            gain_cap = s0.get("gain_cap", 9.99)
+            gain_str = f"突破上限{gain_cap:.0%}" if gain_cap < 9 else "讓利潤奔跑"
+            lines.append(
+                f"<b>▍{label[key]}</b> {stats[key]} · 停損-{stop_pct:.0%} · "
+                f"持有{s0['max_hold']}日 · {gain_str}")
+            for score, code, df, s in picks:
+                ref = df.iloc[-1]["close"]
+                stop = ref * (1 - stop_pct)
+                shares = int(INIT_CAPITAL * RISK_PCT
+                             / max(ref - stop, 0.01) / 1000) * 1000
+                name = names.get(code, "")
+                lines.append(
+                    f"  {code} {name}　進{ref:.1f} 損{stop:.1f}　"
+                    f"{shares:,}股 RS{score:.2f}")
+            lines.append("")
 
     # ── 近觸發觀察名單 ──
     watchlist = _build_watchlist(all_data, names, rs, latest_date)
-    lines.append("<b>【近觸發觀察名單】</b>  (模板✅ 收縮未達/量未爆 但 RS &gt; 0.75)")
-    if not regime_ok:
-        lines.append("  大盤偏弱，僅供參考")
+    lines.append("<b>▍近觸發觀察名單</b> RS&gt;0.75 模板✅ 收縮未達")
     if watchlist:
         for w in watchlist[:8]:
             lines.append(
-                f"  <b>{w['code']} {w['name']}</b>  RS:{w['rs']:.2f}\n"
-                f"    收縮:{w['contraction']:.3f}(需&lt;{w['threshold']:.2f})  "
-                f"量比:{w['vol_surge']:.1f}x  突破:{'✅' if w['breakout'] else '❌'}"
-            )
+                f"  {w['code']} {w['name']}　RS{w['rs']:.2f} "
+                f"收縮{w['contraction']:.2f} 量{w['vol_surge']:.1f}x "
+                f"突破{'✅' if w['breakout'] else '❌'}")
     else:
         lines.append("  (今日無近觸發候選)")
     lines.append("")
-    lines.append("─" * 30)
-    lines.append("⚠️ 以上為量化訊號, 僅供參考, 請自行評估風險。")
+    lines.append("⚠️ 量化訊號僅供參考，請自行評估風險")
 
     output = "\n".join(lines)
 

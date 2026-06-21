@@ -17,12 +17,18 @@
     /analyze 2330       分析個股現況 + 進出場價格 (自動更新資料)
     /backtest [C,D]     組合回測 (慢, 數分鐘)
     /chart              取得圖像化儀表板連結 (權益曲線/月損益/R分布/交易清單)
+    /refresh            手動更新股價歷史資料 (增量下載)
     /status             機器人 / 資料狀態
     /help               指令說明
 
 圖像化儀表板 (webapp.py): 另開終端執行 `python3 webapp.py`, 瀏覽器開
 http://<機器IP>:8800 即可看圖表化分析。設定環境變數 MM_WEB_URL 可讓
 /chart 直接回傳可點擊連結 (例如內網位址或 ngrok 網址)。
+
+自動同步/排程 (雲端部署用):
+    export BOT_AUTO_UPDATE=1   每小時自動 git pull 並重啟套用更新 (預設開啟)
+    export BOT_DAILY_SCAN=1    機器人自行於每日 08:00 推播全市場掃描 (預設關閉,
+                                GitHub Actions 已負責每日報告時免開)
 """
 import csv
 import datetime as _dt
@@ -107,7 +113,10 @@ def send_menu(chat_id):
         [("📋 全市場掃描", "scan")],
         [("📈 本年度進出清單", "year")],
         [("📊 圖像化儀表板", "chart")],
+        [("🌽 期貨每日訊號", "futures")],
         [("🧠 策略設計說明", "info")],
+        [("📥 更新股價資料", "refresh")],
+        [("🔄 同步最新策略", "update")],
         [("📊 機器人狀態", "status")],
     ]
     send_keyboard(chat_id, "📊 策略機器人選單 — 點選功能直接執行:", rows)
@@ -625,6 +634,21 @@ def scan_job(chat_id):
         _job_lock.release()
 
 
+def data_update_job(chat_id):
+    """手動觸發股價歷史資料增量更新 (download_all.py)."""
+    if not _job_lock.acquire(blocking=False):
+        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
+        return
+    try:
+        send(chat_id, "⏳ 更新股價歷史資料中 (增量, 約數十秒~數分鐘)...")
+        out = run_script(["download_all.py"])
+        send(chat_id, f"✅ 資料更新完成\n{out[-1000:] if out else ''}")
+    except Exception as e:  # noqa: BLE001
+        send(chat_id, f"❌ 資料更新失敗: {e}")
+    finally:
+        _job_lock.release()
+
+
 # ── 本年度進出清單 (回測本年已平倉交易) ─────────────────────────────────────
 
 def _year_trades(keys=("C", "D"), progress=None):
@@ -725,6 +749,10 @@ def year_job(chat_id, strats="C,D"):
         _job_lock.release()
 
 
+# alias for backward-compat callback/menu wiring from origin/main
+year_trades_job = year_job
+
+
 # ── 策略設計說明 ─────────────────────────────────────────────────────────────
 
 STRATEGY_INFO = (
@@ -778,6 +806,10 @@ def _refresh_data():
         print("資料更新失敗:", e)
 
 
+# alias for backward-compat callback/menu wiring from origin/main (doc command)
+STRATEGY_DOC = STRATEGY_INFO
+
+
 def scheduler_loop():
     """每天 08:00 (本機時間) 自動全市場掃描並推播給授權使用者."""
     if not ALLOWED_CHAT:
@@ -816,6 +848,9 @@ HELP = (
     "/analyze 2330       個股分析 + 進出場價格\n"
     "/backtest [C,D]     組合回測 (慢, 數分鐘)\n"
     "/chart              圖像化儀表板連結 (權益曲線/月損益/R分布)\n"
+    "/futures [M,D,S]    期貨每日訊號 (穀物期貨)\n"
+    "/refresh            更新股價歷史資料 (增量下載)\n"
+    "/update             git pull 雲端最新策略並重啟\n"
     "/status             資料 / 機器人狀態\n"
     "/help               顯示此說明\n"
     "(每日 08:00 自動全市場掃描並推播)"
@@ -833,7 +868,7 @@ def handle(chat_id, text):
         send_menu(chat_id)
     elif cmd == "status":
         send(chat_id, _status_text())
-    elif cmd == "info":
+    elif cmd in ("info", "doc"):
         send(chat_id, STRATEGY_INFO)
     elif cmd == "year":
         strats = args[0] if args else "C,D"
@@ -856,6 +891,19 @@ def handle(chat_id, text):
                          daemon=True).start()
     elif cmd == "chart":
         send_keyboard(chat_id, chart_text(), [[("🔗 開啟儀表板", _web_url())]])
+    elif cmd == "futures":
+        strats = args[0] if args else "M,D,S"
+        threading.Thread(target=futures_job, args=(chat_id, strats),
+                         daemon=True).start()
+    elif cmd == "refresh":
+        threading.Thread(target=data_update_job, args=(chat_id,),
+                         daemon=True).start()
+    elif cmd == "update":
+        out = _git_pull()
+        send(chat_id, f"🔄 git pull:\n{out[:1000]}")
+        if "up to date" not in out.lower():
+            send(chat_id, "♻️ 套用更新並重啟中...")
+            _reexec()
     elif cmd == "analyze":
         if not args:
             send(chat_id, "用法: /analyze 2330")
@@ -876,8 +924,20 @@ def handle_callback(chat_id, data):
                          daemon=True).start()
     elif data == "chart":
         send_keyboard(chat_id, chart_text(), [[("🔗 開啟儀表板", _web_url())]])
-    elif data == "info":
+    elif data == "futures":
+        threading.Thread(target=futures_job, args=(chat_id,),
+                         daemon=True).start()
+    elif data in ("info", "doc"):
         send(chat_id, STRATEGY_INFO)
+    elif data == "refresh":
+        threading.Thread(target=data_update_job, args=(chat_id,),
+                         daemon=True).start()
+    elif data == "update":
+        out = _git_pull()
+        send(chat_id, f"🔄 git pull:\n{out[:1000]}")
+        if "up to date" not in out.lower():
+            send(chat_id, "♻️ 套用更新並重啟中...")
+            _reexec()
     elif data == "status":
         send(chat_id, _status_text())
     elif data == "menu":
@@ -886,14 +946,88 @@ def handle_callback(chat_id, data):
         send(chat_id, f"未知按鈕: {data}")
 
 
+# ── 期貨每日訊號 ─────────────────────────────────────────────────────────────
+
+def futures_job(chat_id, strats="M,D,S"):
+    if not _job_lock.acquire(blocking=False):
+        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
+        return
+    try:
+        send(chat_id, "⏳ 更新期貨資料 + 掃描訊號中...")
+        run_script(["futures_data.py"])
+        out = run_script(["futures_signals.py", "--strategies", strats])
+        send(chat_id, f"📈 期貨每日訊號 ({strats})\n\n{out}")
+    finally:
+        _job_lock.release()
+
+
+# ── 自動同步雲端最新程式碼 ───────────────────────────────────────────────────
+
+def _git_pull():
+    """git pull 最新 main; 回傳輸出文字 (含錯誤)."""
+    try:
+        out = subprocess.run(["git", "pull", "--rebase", "origin", "main"],
+                             cwd=HERE, capture_output=True, text=True,
+                             timeout=120)
+        return ((out.stdout or "") + (out.stderr or "")).strip() or "(無輸出)"
+    except Exception as e:  # noqa: BLE001
+        return f"git pull 失敗: {e}"
+
+
+def _reexec():
+    """用最新程式碼重啟自己 (套用 telegram_bot.py / 策略檔更新)."""
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+def auto_update_loop(interval=3600):
+    """每隔 interval 秒自動 git pull; 偵測到更新且無任務在跑時重啟套用."""
+    while True:
+        time.sleep(interval)
+        msg = _git_pull()
+        if "up to date" in msg.lower() or "已經是最新" in msg:
+            continue
+        # 有更新 → 趁沒有任務在跑時重啟 (策略檔每次指令會自動 reload, 重啟確保完整)
+        if _job_lock.acquire(blocking=False):
+            _job_lock.release()
+            if ALLOWED_CHAT:
+                send(ALLOWED_CHAT, "🔄 偵測到雲端策略更新，已同步並重啟")
+            print("[auto-update] 偵測到更新, 重啟中...\n" + msg[:300])
+            _reexec()
+
+
 # ── 主迴圈 ─────────────────────────────────────────────────────────────────
+
+def ensure_data():
+    """雲端首次啟動時資料夾為空, 自動下載全市場資料 (含 _TWII)."""
+    data_dir = DATA_DIR or os.path.join(HERE, "data_adj")
+    csvs = ([f for f in os.listdir(data_dir)
+             if f.endswith(".csv") and not f.startswith("_")]
+            if os.path.isdir(data_dir) else [])
+    if len(csvs) >= 100:
+        print(f"資料已存在 ({len(csvs)} 檔), 略過下載")
+        return
+    print("資料夾為空, 開始下載全市場資料 (首次約數分鐘)...")
+    env = dict(os.environ)
+    env.setdefault("MM_DATA_DIR", data_dir)
+    subprocess.run(["python3", "download_all.py"], cwd=HERE, env=env)
+
 
 def main():
     if not TOKEN:
         raise SystemExit("請先設定環境變數 TELEGRAM_BOT_TOKEN")
+    # download_all.py 預設寫入 ./data_adj; 雲端未設 MM_DATA_DIR 時也指向它
+    if not DATA_DIR:
+        os.environ["MM_DATA_DIR"] = os.path.join(HERE, "data_adj")
+    ensure_data()
     print("策略機器人啟動, 等待指令... (Ctrl+C 結束)")
-    # 啟動每日 08:00 自動掃描排程
-    threading.Thread(target=scheduler_loop, daemon=True).start()
+    # 每日 08:00 自動掃描預設關閉 (GitHub Actions 已負責每日推播, 避免重複)。
+    # 若要改由本機器人推播, 設環境變數 BOT_DAILY_SCAN=1
+    if os.environ.get("BOT_DAILY_SCAN", "").strip() == "1":
+        threading.Thread(target=scheduler_loop, daemon=True).start()
+    # 自動同步雲端最新策略 (預設開啟; 設 BOT_AUTO_UPDATE=0 可關閉)
+    if os.environ.get("BOT_AUTO_UPDATE", "1").strip() == "1" \
+            and os.path.isdir(os.path.join(HERE, ".git")):
+        threading.Thread(target=auto_update_loop, daemon=True).start()
     try:
         r0 = requests.get(f"{API}/getUpdates", params={"offset": -1}, timeout=10)
         updates0 = r0.json().get("result", [])
