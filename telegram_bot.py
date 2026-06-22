@@ -18,6 +18,7 @@
     /backtest [C,D]     組合回測 (慢, 數分鐘)
     /chart              取得圖像化儀表板連結 (權益曲線/月損益/R分布/交易清單)
     /futures [M,D,S]    期貨每日訊號 (穀物期貨)
+    /txf                台指期日內策略 (前日高低突破, 小時K) 即時掛單計畫與觸發狀態
     /refresh            手動更新股價歷史資料 (增量下載)
     /update             git pull 雲端最新策略並重啟
     /c <指令>           叫 Claude Code 依文字指令分析/優化策略/改程式碼 (需本機已裝 claude CLI)
@@ -117,6 +118,7 @@ def send_menu(chat_id):
         [("📈 本年度進出清單", "year")],
         [("📊 圖像化儀表板", "chart")],
         [("🌽 期貨每日訊號", "futures")],
+        [("📐 台指期日內策略", "txf")],
         [("🧠 策略設計說明", "info")],
         [("📥 更新股價資料", "refresh")],
         [("🔄 同步最新策略", "update")],
@@ -958,6 +960,7 @@ HELP = (
     "/backtest [C,D]     組合回測 (慢, 數分鐘)\n"
     "/chart              圖像化儀表板連結 (權益曲線/月損益/R分布)\n"
     "/futures [M,D,S]    期貨每日訊號 (穀物期貨)\n"
+    "/txf                台指期日內策略 (前日高低突破, 小時K)\n"
     "/refresh            更新股價歷史資料 (增量下載)\n"
     "/update             git pull 雲端最新策略並重啟\n"
     "/c <指令>           叫 Claude Code 依指令分析/優化/改程式碼 (例: /c 優化策略)\n"
@@ -1004,6 +1007,8 @@ def handle(chat_id, text):
         strats = args[0] if args else "M,D,S"
         threading.Thread(target=futures_job, args=(chat_id, strats),
                          daemon=True).start()
+    elif cmd == "txf":
+        threading.Thread(target=txf_job, args=(chat_id,), daemon=True).start()
     elif cmd == "refresh":
         threading.Thread(target=data_update_job, args=(chat_id,),
                          daemon=True).start()
@@ -1043,6 +1048,8 @@ def handle_callback(chat_id, data):
     elif data == "futures":
         threading.Thread(target=futures_job, args=(chat_id,),
                          daemon=True).start()
+    elif data == "txf":
+        threading.Thread(target=txf_job, args=(chat_id,), daemon=True).start()
     elif data in ("info", "doc"):
         send(chat_id, STRATEGY_INFO)
     elif data == "refresh":
@@ -1063,6 +1070,27 @@ def handle_callback(chat_id, data):
 
 
 # ── 期貨每日訊號 ─────────────────────────────────────────────────────────────
+
+def txf_job(chat_id):
+    """台指期日內策略 (前日高低突破): 抓最新小時K, 回報今日掛單計畫與觸發狀態."""
+    if not _job_lock.acquire(blocking=False):
+        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
+        return
+    try:
+        msg_id = send_get_id(chat_id, "⏳ 抓取台指 (^TWII) 小時K 計算中...")
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import importlib
+        import txf_strategy
+        importlib.reload(txf_strategy)
+        report = txf_strategy.live_report()
+        edit(chat_id, msg_id, "✅ 台指日內策略")
+        send(chat_id, report)
+    except Exception as e:  # noqa: BLE001
+        send(chat_id, f"❌ 台指日內策略失敗: {e}")
+    finally:
+        _job_lock.release()
+
 
 def futures_job(chat_id, strats="M,D,S"):
     if not _job_lock.acquire(blocking=False):
