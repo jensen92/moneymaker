@@ -193,16 +193,17 @@ def _fetch_yf(code, suffix, range_):
     return rows or None
 
 
-def task(stock):
+def task(stock, cutoff):
     code, market = stock["code"], stock["market"]
     path = os.path.join(DATA_ADJ, f"{code}.csv")
     suffixes = [".TW", ".TWO"] if market == "TWSE" else [".TWO", ".TW"]
 
-    # 判斷是否需要更新
-    cutoff = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+    # 判斷是否需要更新: cutoff = 該股官方最新交易日, 本地已到此日才跳過。
+    # 改用「每股各自的官方最新日期」而非「今天-2」估計, 也避免上市/上櫃
+    # 兩市場交易日不同步時, 用單一全市場日期誤判某一邊永遠落後。
     last = _last_date(path) if os.path.exists(path) else ""
-    if last >= cutoff:
-        return code, "skip"   # 資料已是最新
+    if cutoff and last >= cutoff:
+        return code, "skip"   # 資料已到該股最新交易日
 
     incremental = bool(last)  # 有舊檔 → 只補新資料
     range_ = INC_RANGE if incremental else FULL_RANGE
@@ -278,9 +279,22 @@ def main():
           f"(上市 {sum(1 for s in universe.values() if s['market']=='TWSE')}, "
           f"上櫃 {sum(1 for s in universe.values() if s['market']=='TPEx')})")
 
+    # 先取官方今日資料, 由此得出「每股官方最新交易日」作為更新門檻 (cutoff)。
+    # 本地最後一筆 < 該股最新交易日 → 需更新; 已到最新交易日才跳過。
+    twse_today = get_twse_today()
+    official_date = {code: v[0] for code, v in twse_today.items()}
+    fallback = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+    if twse_today:
+        latest = max(official_date.values(), default="")
+        print(f"官方最新交易日: 最新 {latest} (依各股官方日期判斷是否更新)")
+    else:
+        print(f"⚠️ 官方資料取得失敗, 改用估計門檻 {fallback}")
+
     ok, skip, fail = 0, 0, []
     with ThreadPoolExecutor(max_workers=8) as ex:
-        futs = {ex.submit(task, s): s["code"] for s in universe.values()}
+        # 找不到官方日期的股票 (停牌等) → 用 fallback, 至少不漏抓
+        futs = {ex.submit(task, s, official_date.get(s["code"], fallback)): s["code"]
+                for s in universe.values()}
         for fut in as_completed(futs):
             code, result = fut.result()
             if result == "skip":
@@ -299,7 +313,6 @@ def main():
         print("失敗 (多為新上市未滿 60 交易日):", fail[:30])
 
     print("以台灣交易所/櫃買中心官方資料比對完整性 ...")
-    twse_today = get_twse_today()
     filled, mismatched, stale = verify_and_fill(list(universe.keys()), twse_today)
     print(f"官方資料補齊缺漏 (僅缺最後一天): {len(filled)} 檔"
           + (f" {filled[:20]}" if filled else ""))
