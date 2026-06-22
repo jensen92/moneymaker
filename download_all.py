@@ -4,6 +4,13 @@
 - 新股: 全量下載 15 年歷史
 - 已存在且日期 < 今天-2: 增量補齊 (只補缺少的新資料, 不覆蓋舊資料)
 - 已存在且日期 >= 今天-2: 跳過 (資料已是最新)
+
+完整性比對 (verify_and_fill):
+- 完整資料以台灣交易所 (TWSE) 官方 OpenAPI 為準 (https://openapi.twse.com.tw/,
+  上櫃則用 TPEx OpenAPI), 下載結束後比對本地最後一筆與官方今日收盤:
+  - 本地缺當日資料 (Yahoo 落後/失敗) → 用官方資料補齊, 確保完整性。
+  - 本地已有但收盤價與官方差異 > 容忍度 → 視為除權息還原股價造成的正常差異,
+    以 Yahoo (還原股價) 為準, 不覆蓋, 僅記錄供人工複核。
 """
 import csv
 import json
@@ -49,18 +56,115 @@ def get_universe():
     return stocks
 
 
-def _last_date(path):
-    """回傳 CSV 最後一行的日期字串, 若無法讀取則回傳 ''."""
+def _last_line(path):
+    """回傳 CSV 最後一行 (字串), 若無法讀取則回傳 ''."""
     try:
         with open(path, "rb") as f:
             f.seek(0, 2)
             size = f.tell()
             f.seek(max(0, size - 200))
             tail = f.read().decode(errors="ignore")
-        last_line = [l for l in tail.splitlines() if l.strip()][-1]
-        return last_line.split(",")[0]
+        return [l for l in tail.splitlines() if l.strip()][-1]
     except Exception:
         return ""
+
+
+def _last_date(path):
+    """回傳 CSV 最後一行的日期字串, 若無法讀取則回傳 ''."""
+    line = _last_line(path)
+    return line.split(",")[0] if line else ""
+
+
+def _roc_to_iso(roc_date):
+    """台灣官方民國日期 '1150618' -> ISO '2026-06-18'."""
+    s = str(roc_date)
+    y = int(s[:-4]) + 1911
+    return f"{y}-{s[-4:-2]}-{s[-2:]}"
+
+
+def get_twse_today():
+    """官方今日收盤 (上市+上櫃, 未還原股價), 回傳 {code: (date_iso,o,h,l,c,v)}.
+
+    用作「完整資料來源」的校驗基準: TWSE/TPEx 官方資料保證涵蓋所有交易日,
+    可補齊 Yahoo 落後/抓取失敗造成的缺漏。
+    """
+    out = {}
+    for row in get_json("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL") or []:
+        code = row.get("Code", "")
+        if len(code) != 4 or not code.isdigit():
+            continue
+        try:
+            out[code] = (
+                _roc_to_iso(row["Date"]),
+                float(row["OpeningPrice"]), float(row["HighestPrice"]),
+                float(row["LowestPrice"]), float(row["ClosingPrice"]),
+                int(float(row["TradeVolume"])))
+        except (KeyError, ValueError):
+            continue
+    for row in get_json("https://www.tpex.org.tw/openapi/v1/"
+                        "tpex_mainboard_daily_close_quotes") or []:
+        code = row.get("SecuritiesCompanyCode", "")
+        if len(code) != 4 or not code.isdigit() or code in out:
+            continue
+        try:
+            out[code] = (
+                _roc_to_iso(row["Date"]),
+                float(row["Open"]), float(row["High"]),
+                float(row["Low"]), float(row["Close"]),
+                int(float(row["TradingShares"])))
+        except (KeyError, ValueError):
+            continue
+    return out
+
+
+def verify_and_fill(codes, twse_today, tol=0.005, max_gap_days=5):
+    """以官方今日收盤比對本地 (Yahoo 還原股價) 資料, 補齊缺漏 + 標記差異.
+
+    只補「剛好缺最後一天」的情況 (gap <= max_gap_days 個日曆日, 對應 Yahoo
+    當天還沒發布或抓取失敗一次); gap 較大代表 Yahoo 連續多日抓取失敗, 直接
+    插入官方單筆資料反而會在中間留下缺口 (破壞移動平均等指標計算), 此時只
+    回報、不寫入, 留給下次 Yahoo 增量抓取自然補齊。
+
+    回傳 (filled, mismatched, stale):
+      filled=已用官方資料補上的代號清單
+      mismatched=(代號, 本地收盤, 官方收盤) 清單, 僅記錄不覆蓋 (以 Yahoo 為準)
+      stale=(代號, 本地最後日期, 官方最後日期) 缺口過大, 待下次增量抓取補齊
+    """
+    filled, mismatched, stale = [], [], []
+    for code in codes:
+        official = twse_today.get(code)
+        if official is None:
+            continue
+        path = os.path.join(DATA_ADJ, f"{code}.csv")
+        if not os.path.exists(path):
+            continue
+        d_official, o, h, l, c, v = official
+        line = _last_line(path)
+        if not line:
+            continue
+        parts = line.split(",")
+        last_date = parts[0]
+        if last_date == d_official:
+            try:
+                local_close = float(parts[4])
+            except (IndexError, ValueError):
+                continue
+            if abs(local_close - c) / c > tol:
+                mismatched.append((code, local_close, c))
+        elif last_date < d_official:
+            try:
+                gap = (datetime.strptime(d_official, "%Y-%m-%d")
+                       - datetime.strptime(last_date, "%Y-%m-%d")).days
+            except ValueError:
+                continue
+            if gap > max_gap_days:
+                stale.append((code, last_date, d_official))
+                continue
+            # 本地僅缺最後一天 (Yahoo 落後/失敗) -> 用官方完整資料補齊
+            with open(path, "a", newline="") as f:
+                csv.writer(f).writerow([d_official, o, h, l, c, v])
+            filled.append(code)
+    return filled, mismatched, stale
 
 
 def _fetch_yf(code, suffix, range_):
@@ -193,6 +297,20 @@ def main():
     print(f"done. 新增/更新={ok}, 跳過={skip}, 失敗={len(fail)}")
     if fail:
         print("失敗 (多為新上市未滿 60 交易日):", fail[:30])
+
+    print("以台灣交易所/櫃買中心官方資料比對完整性 ...")
+    twse_today = get_twse_today()
+    filled, mismatched, stale = verify_and_fill(list(universe.keys()), twse_today)
+    print(f"官方資料補齊缺漏 (僅缺最後一天): {len(filled)} 檔"
+          + (f" {filled[:20]}" if filled else ""))
+    if mismatched:
+        print(f"⚠️ 與官方收盤價差異 > 0.5% (還原股價正常現象, 已保留 Yahoo 還原值): "
+              f"{len(mismatched)} 檔")
+        for code, local_close, official_close in mismatched[:10]:
+            print(f"   {code}: yahoo還原={local_close} 官方未還原={official_close}")
+    if stale:
+        print(f"ℹ️ 缺口過大未補 (留給下次 Yahoo 增量抓取): {len(stale)} 檔"
+              f" {[s[0] for s in stale[:20]]}")
 
 
 if __name__ == "__main__":
