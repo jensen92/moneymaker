@@ -17,7 +17,9 @@
     /analyze 2330       分析個股現況 + 進出場價格 (自動更新資料)
     /backtest [C,D]     組合回測 (慢, 數分鐘)
     /chart              取得圖像化儀表板連結 (權益曲線/月損益/R分布/交易清單)
+    /futures [M,D,S]    期貨每日訊號 (穀物期貨)
     /refresh            手動更新股價歷史資料 (增量下載)
+    /update             git pull 雲端最新策略並重啟
     /c <指令>           叫 Claude Code 依文字指令分析/優化策略/改程式碼 (需本機已裝 claude CLI)
     /status             機器人 / 資料狀態
     /help               指令說明
