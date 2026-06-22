@@ -21,7 +21,8 @@ from datetime import datetime, timedelta
 
 import requests
 
-DATA_ADJ = os.path.join(os.path.dirname(__file__), "data_adj")
+DATA_ADJ = (os.environ.get("MM_DATA_DIR", "").strip()
+            or os.path.join(os.path.dirname(__file__), "data_adj"))
 UNIVERSE_FILE = os.path.join(DATA_ADJ, "_universe_all.json")
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
 FULL_RANGE = "15y"
