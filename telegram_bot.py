@@ -283,11 +283,13 @@ def _analyze_stock(code, progress=None):
                           load_regime_tiers, load_vol_scalars,
                           RISK_PCT, INIT_CAPITAL, suggested_position)
 
-    # 1. 更新個股資料
+    # 1. 更新個股資料 + 大盤指數 _TWII (市況濾網需用最新指數, 不可只更新個股)
     note(f"⏳ {code}: 下載最新資料中...")
     path, dl_msg = _update_stock_data(code)
     if path is None or not os.path.exists(path):
         return f"❌ {code}: {dl_msg}"
+    note(f"⏳ {code}: 更新大盤指數 _TWII...")
+    _refresh_index_only()
 
     # 2. 載入個股
     df = pd.read_csv(path, parse_dates=["date"])
@@ -654,11 +656,30 @@ def scan_job(chat_id):
                 state["last"] = now
                 edit(chat_id, msg_id, text)
 
+        _full_refresh(progress)        # 先同步全市場 + _TWII 到最新交易日
         result = _scan_all(progress=progress)
         edit(chat_id, msg_id, "✅ 掃描完成")
         send(chat_id, result)
     except Exception as e:  # noqa: BLE001
         send(chat_id, f"❌ 掃描失敗: {e}")
+    finally:
+        _job_lock.release()
+
+
+def picks_job(chat_id):
+    """今日選股: 先同步全市場 + _TWII 到最新交易日, 再跑 daily_picks.py."""
+    if not _job_lock.acquire(blocking=False):
+        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
+        return
+    try:
+        msg_id = send_get_id(chat_id, "⏳ 同步全市場資料 (含大盤 _TWII)...")
+        _full_refresh()
+        edit(chat_id, msg_id, "⏳ 資料已更新, 跑今日選股中...")
+        out = run_script(["daily_picks.py"])
+        edit(chat_id, msg_id, "✅ 今日選股完成")
+        send(chat_id, out)
+    except Exception as e:  # noqa: BLE001
+        send(chat_id, f"❌ 今日選股失敗: {e}")
     finally:
         _job_lock.release()
 
@@ -870,6 +891,30 @@ def _refresh_data():
         print("資料更新失敗:", e)
 
 
+def _full_refresh(progress=None):
+    """掃描/選股前的完整資料同步: 全市場個股 + 大盤指數 (_TWII) 一起更新到最新
+    交易日 (download_all.py 內含 fetch_index + 各股增量 + 官方資料比對補齊)。
+
+    確保篩選永遠用最新價格, 而非「查到什麼才更新什麼」。回傳 download_all 輸出。
+    """
+    if progress:
+        progress("⏳ 同步全市場資料 (含大盤 _TWII) 到最新交易日...")
+    return run_script(["download_all.py"])
+
+
+def _refresh_index_only():
+    """只更新大盤指數 _TWII.csv (快, 單一檔), 供個股分析確保市況濾網用最新指數."""
+    try:
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import importlib
+        import download_all as da
+        importlib.reload(da)
+        da.fetch_index()
+    except Exception as e:  # noqa: BLE001
+        print("_TWII 更新失敗:", e)
+
+
 # alias for backward-compat callback/menu wiring from origin/main (doc command)
 STRATEGY_DOC = STRATEGY_INFO
 
@@ -940,8 +985,7 @@ def handle(chat_id, text):
         threading.Thread(target=year_job, args=(chat_id, strats),
                          daemon=True).start()
     elif cmd == "picks":
-        threading.Thread(target=heavy_job,
-                         args=(chat_id, "今日選股", ["daily_picks.py"]),
+        threading.Thread(target=picks_job, args=(chat_id,),
                          daemon=True).start()
     elif cmd == "backtest":
         strats = args[0] if args else "C,D"
