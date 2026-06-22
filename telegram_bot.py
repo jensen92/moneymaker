@@ -257,7 +257,7 @@ def _update_stock_data(code):
 
 
 def _analyze_stock(code, progress=None):
-    """下載最新資料, 用策略 C/D 分析現況, 回傳文字報告.
+    """下載最新資料, 用策略 PA/PB/K/L/D/C 分析現況, 回傳文字報告.
 
     progress: 可選 callback(text), 用於即時回報掃描進度.
     """
@@ -379,10 +379,10 @@ def _analyze_stock(code, progress=None):
     except Exception:  # noqa: BLE001
         rs_rank = None
 
-    # 4. 跑策略訊號
+    # 4. 跑策略訊號 (與 /scan 一致的現行輪動)
     i = len(df) - 1
     results = {}
-    for key in ("C", "D"):
+    for key in SCAN_KEYS:
         try:
             sig = STRATEGIES[key](df, i, rs_rank=rs_rank)
             results[key] = sig
