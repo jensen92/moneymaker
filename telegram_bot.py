@@ -33,6 +33,10 @@ http://<機器IP>:8800 即可看圖表化分析。設定環境變數 MM_WEB_URL 
     export BOT_AUTO_UPDATE=1   每小時自動 git pull 並重啟套用更新 (預設開啟)
     export BOT_DAILY_SCAN=1    機器人自行於每日 08:00 推播全市場掃描 (預設關閉,
                                 GitHub Actions 已負責每日報告時免開)
+    export BOT_TXF_WATCH=1     盤中(09:00-13:30)自動輪詢台指日內策略, 一旦觸發
+                                進場/停損/收盤立即推播 (預設關閉)
+    export BOT_TXF_WATCH_INTERVAL=120   盤中輪詢間隔秒數 (預設 120)
+    export TXF_EQUITY=1000000  /txf 顯示資金管理建議口數時所用的帳戶權益 (預設不顯示)
 """
 import csv
 import datetime as _dt
@@ -921,6 +925,44 @@ def _refresh_index_only():
 STRATEGY_DOC = STRATEGY_INFO
 
 
+def txf_watch_loop():
+    """盤中 (09:00-13:30) 自動輪詢台指日內策略, 一旦今日觸發(多/空進場或停損)
+    立即推播給授權使用者, 每個交易日同一筆觸發只推播一次。"""
+    if not ALLOWED_CHAT:
+        print("未設定 TELEGRAM_CHAT_ID, 略過台指盤中監控")
+        return
+    import datetime as dt
+    interval = int(os.environ.get("BOT_TXF_WATCH_INTERVAL", "120"))
+    last_notified = {}  # date -> status 已推播過的狀態 ('open'/'stopped'/'closed')
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import importlib
+    while True:
+        now = dt.datetime.now()
+        in_session = (now.weekday() < 5
+                      and (now.hour, now.minute) >= (9, 0)
+                      and (now.hour, now.minute) <= (13, 35))
+        if not in_session:
+            time.sleep(60)
+            continue
+        try:
+            import txf_strategy
+            importlib.reload(txf_strategy)
+            today_d, trade = txf_strategy.check_today_trigger()
+            if trade is not None and last_notified.get(today_d) != trade["status"]:
+                st = {"open": "🚨 已觸發進場", "stopped": "🛑 已停損出場",
+                      "closed": "🔔 已收盤平倉"}[trade["status"]]
+                send(ALLOWED_CHAT,
+                     f"{st}: 台指日內策略 {trade['dir']}單\n"
+                     f"進場 {trade['entry']:.0f} → "
+                     f"{trade['exit']:.0f}  {trade['pnl_pt']:+.0f} 點 "
+                     f"(NT${trade['pnl_nt']:+,.0f})")
+                last_notified[today_d] = trade["status"]
+        except Exception as e:  # noqa: BLE001
+            print("台指盤中監控錯誤:", e)
+        time.sleep(interval)
+
+
 def scheduler_loop():
     """每天 08:00 (本機時間) 自動全市場掃描並推播給授權使用者."""
     if not ALLOWED_CHAT:
@@ -1172,6 +1214,9 @@ def main():
     if os.environ.get("BOT_AUTO_UPDATE", "1").strip() == "1" \
             and os.path.isdir(os.path.join(HERE, ".git")):
         threading.Thread(target=auto_update_loop, daemon=True).start()
+    # 台指期日內策略盤中自動推播 (預設關閉; 設 BOT_TXF_WATCH=1 開啟)
+    if os.environ.get("BOT_TXF_WATCH", "").strip() == "1":
+        threading.Thread(target=txf_watch_loop, daemon=True).start()
     try:
         r0 = requests.get(f"{API}/getUpdates", params={"offset": -1}, timeout=10)
         updates0 = r0.json().get("result", [])
