@@ -15,12 +15,31 @@
 
 時間框架說明: 訊號判斷用小時 K (唯一有足夠歷史可驗證者)。實單可用 5 分 / 15 分 K
 細修進場點 (例如等突破後第一根 5 分回測不破再進), 但核心觸發與出場以上述為準。
+
+資金管理 (加減碼): 回測本身仍以「固定 1 口」驗證訊號邊際 (避免資金曲線回饋污染
+訊號評估)。實單口數改用「固定風險比例 + 加碼」模型, 見 `position_plan()`:
+  1. 起始口數 = 帳戶權益 × 每筆風險% ÷ (停損點數 × 每點價值), 四捨五入下界, 至少 1 口。
+  2. 加碼: 進場後每順勢推進 `pyramid_step_pt` 點加 1 口 (最多加到 `max_units` 口),
+     加碼後全倉停損上移(多)/下移(空)至「最新加碼價 - 原始停損距離」, 確保整體
+     風險不擴大 (移動停損, 非加碼不鎖利)。
+  3. 夜盤/隔日跳空風險: 因台指期可能在非交易時段大幅跳空, 加碼與起始口數皆應
+     以保守的 `risk_pct` (預設 1%) 計算, 不建議滿倉重壓。
+
+夜盤資料說明 (誠實揭露): 本策略訊號與回測標的 ^TWII 為「加權指數現貨」, 只在台股
+盤中 09:00-13:30 有報價, 不包含台指期夜盤 (15:00-翌日05:00) 的盤後行情；Yahoo
+Finance 對 ^TWII 也沒有夜盤資料可抓。若要將夜盤納入策略 (例如夜盤跳空缺口分析、
+夜盤突破), 須改用 TXF 期貨本身的夜盤逐筆/K 線資料 (例如券商 API 或期交所歷史
+資料), 目前程式碼未內建此資料來源, 故本策略只覆蓋日盤訊號; 實單須自行留意夜盤
+留倉的跳空風險 (尤其加碼後的停損可能在夜盤跳空時失效, 只能在次日開盤才能成交)。
 """
 import os
 from collections import defaultdict
 
 STOP_PT = 40          # 停損點數
 POINT_VALUE = 200.0   # 大台 NT$/點 (小台 MXF 為 50)
+RISK_PCT = 0.01        # 每筆風險佔帳戶權益比例 (起始口數用)
+PYRAMID_STEP_PT = 40   # 順勢推進多少點加碼 1 口 (預設等於停損距離)
+MAX_UNITS = 3          # 最多加碼到幾口
 
 
 def make_plan(prev_high, prev_low, stop_pt=STOP_PT):
@@ -31,6 +50,37 @@ def make_plan(prev_high, prev_low, stop_pt=STOP_PT):
         "short": {"trigger": prev_low, "stop": prev_low + stop_pt,
                   "exit": "13:30 收盤", "desc": f"跌破前日低 {prev_low:.0f} 做空"},
         "stop_pt": stop_pt,
+    }
+
+
+def position_plan(equity, side, entry, stop_pt=STOP_PT, risk_pct=RISK_PCT,
+                   pyramid_step_pt=PYRAMID_STEP_PT, max_units=MAX_UNITS,
+                   point_value=POINT_VALUE):
+    """資金管理/加減碼計畫: 依帳戶權益算起始口數, 並列出加碼價位與移動停損。
+
+    side: +1(多) / -1(空)。回傳 dict: base_units, adds(list of {price, units,
+    stop}), max_units, risk_pct。僅供「實單口數」參考, 回測訊號邊際仍以 1 口驗證。
+    """
+    risk_amount = equity * risk_pct
+    base_units = max(1, int(risk_amount // (stop_pt * point_value)))
+    adds = []
+    stop = entry - side * stop_pt
+    for n in range(1, max_units - base_units + 1):
+        add_price = entry + side * pyramid_step_pt * n
+        stop = add_price - side * stop_pt  # 加碼後全倉停損移至「加碼價-原始停損距離」
+        adds.append({
+            "units": base_units + n,
+            "trigger": add_price,
+            "stop_all": stop,
+            "desc": f"順勢加碼至 {base_units + n} 口 (價位 {add_price:.0f}, "
+                    f"全倉停損移至 {stop:.0f})",
+        })
+    return {
+        "base_units": base_units,
+        "base_stop": entry - side * stop_pt,
+        "adds": adds,
+        "max_units": max_units,
+        "risk_pct": risk_pct,
     }
 
 
@@ -122,7 +172,29 @@ def live_report():
             f"今日已觸發 {trade['dir']}單: 進場 {trade['entry']:.0f} → "
             f"{'現價/出場' if trade['status']=='open' else '出場'} {trade['exit']:.0f}  "
             f"{trade['pnl_pt']:+.0f} 點 (NT${trade['pnl_nt']:+,.0f})  [{st}]")
+        equity = float(os.environ.get("TXF_EQUITY", "0") or 0)
+        if equity > 0:
+            pp = position_plan(equity, trade["side"], trade["entry"])
+            lines.append("")
+            lines.append(f"💰 資金管理 (帳戶權益 NT${equity:,.0f}, 每筆風險 "
+                         f"{pp['risk_pct']*100:.1f}%): 起始 {pp['base_units']} 口, "
+                         f"停損 {pp['base_stop']:.0f}")
+            for a in pp["adds"]:
+                lines.append(f"   {a['desc']}")
     return "\n".join(lines)
+
+
+def check_today_trigger():
+    """供盤中自動推播用: 回傳 (today_d, trade|None)。trade 為 evaluate_day() 的結果,
+    僅在「今日已觸發」時非 None, 呼叫端可比對是否已推播過避免重複通知。"""
+    days = _recent_days(6)
+    if len(days) < 2:
+        return None, None
+    prev_d, prev_bars = days[-2]
+    today_d, today_bars = days[-1]
+    ph = max(b["h"] for b in prev_bars)
+    pl = min(b["l"] for b in prev_bars)
+    return today_d, evaluate_day(today_bars, ph, pl)
 
 
 if __name__ == "__main__":
