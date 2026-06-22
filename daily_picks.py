@@ -1,4 +1,4 @@
-"""每日選股: 以最新資料對全部股票跑策略 C / D, 各輸出最多 2 檔.
+"""每日選股: 以最新資料對全部股票跑策略 PA/PB/K/L/D/C (現行輪動), 各輸出最多 2 檔.
 
 使用方式: 先跑 download_data.py 更新資料, 再跑本腳本.
 """
@@ -11,6 +11,9 @@ import pandas as pd
 from strategies import STRATEGIES, add_indicators
 from backtest import DATA_DIR, load_regime, INIT_CAPITAL, RISK_PCT, PICKS_PER_DAY
 from backtest import compute_rs_rank
+
+# 與每日報告 (github_scan.py) / /scan 一致的策略輪動
+PICK_KEYS = ["PA", "PB", "K", "L", "D", "C"]
 
 
 def main():
@@ -35,7 +38,7 @@ def main():
     rs = compute_rs_rank(all_data)
     risk_on = load_regime()
 
-    candidates = {"A": [], "C": [], "D": []}
+    candidates = {k: [] for k in PICK_KEYS}
     latest_date = None
 
     for code, df in all_data.items():
@@ -48,7 +51,7 @@ def main():
         except KeyError:
             rank = None
         if rank is not None and not (isinstance(rank, float) and np.isnan(rank)):
-            for key in ("C", "D"):
+            for key in PICK_KEYS:
                 s = STRATEGIES[key](df, i, rs_rank=rank)
                 if s:
                     candidates[key].append((s["score"], code, df, s))
@@ -58,7 +61,7 @@ def main():
     if not regime_ok:
         return
 
-    for key in ("A", "C", "D"):
+    for key in PICK_KEYS:
         print(f"\n=== 策略 {key} 明日進場候選 (取前 {PICKS_PER_DAY}) ===")
         picks = sorted(candidates[key], reverse=True)[:PICKS_PER_DAY]
         if not picks:
