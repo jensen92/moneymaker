@@ -18,6 +18,7 @@
     /backtest [C,D]     組合回測 (慢, 數分鐘)
     /chart              取得圖像化儀表板連結 (權益曲線/月損益/R分布/交易清單)
     /refresh            手動更新股價歷史資料 (增量下載)
+    /c <指令>           叫 Claude Code 依文字指令分析/優化策略/改程式碼 (需本機已裝 claude CLI)
     /status             機器人 / 資料狀態
     /help               指令說明
 
@@ -660,6 +661,41 @@ def scan_job(chat_id):
         _job_lock.release()
 
 
+def claude_job(chat_id, prompt):
+    """把 /c 後面的文字交給 Claude Code CLI (headless) 執行, 完成後回報結果.
+
+    在本機 repo 目錄下以無人值守模式跑 `claude -p`, 讓它可以直接讀寫程式碼、
+    跑回測、commit。因為是無人值守, 用 --dangerously-skip-permissions 跳過互動式
+    權限詢問 (否則指令會卡死等不到人按確認) —— 等同把整台機器/repo 的寫入權限
+    交給 Telegram 訊息發送者, 務必只在 ALLOWED_CHAT 限制下使用。
+    """
+    if not _job_lock.acquire(blocking=False):
+        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
+        return
+    try:
+        send(chat_id, f"🤖 Claude Code 執行中:\n{prompt}\n\n(可能需數分鐘~數十分鐘, 完成後會回報結果)")
+        t0 = time.time()
+        try:
+            p = subprocess.run(
+                ["claude", "-p", prompt, "--dangerously-skip-permissions"],
+                cwd=HERE, env=dict(os.environ),
+                capture_output=True, text=True, timeout=1800)
+            out = (p.stdout or "").strip()
+            if p.returncode != 0:
+                out += f"\n[錯誤 returncode={p.returncode}]\n{(p.stderr or '')[-1500:]}"
+        except FileNotFoundError:
+            out = "[錯誤] 找不到 claude CLI, 請先在此機器安裝 Claude Code 並確保在 PATH 中"
+        except subprocess.TimeoutExpired:
+            out = "[逾時] 執行超過 30 分鐘已中止"
+        mins = (time.time() - t0) / 60
+        out = out.strip() or "(無輸出)"
+        send(chat_id, f"✅ Claude Code 完成 (耗時 {mins:.1f} 分)\n\n{out[-3500:]}")
+    except Exception as e:  # noqa: BLE001
+        send(chat_id, f"❌ Claude Code 執行失敗: {e}")
+    finally:
+        _job_lock.release()
+
+
 def data_update_job(chat_id):
     """手動觸發股價歷史資料增量更新 (download_all.py)."""
     if not _job_lock.acquire(blocking=False):
@@ -877,6 +913,7 @@ HELP = (
     "/futures [M,D,S]    期貨每日訊號 (穀物期貨)\n"
     "/refresh            更新股價歷史資料 (增量下載)\n"
     "/update             git pull 雲端最新策略並重啟\n"
+    "/c <指令>           叫 Claude Code 依指令分析/優化/改程式碼 (例: /c 優化策略)\n"
     "/status             資料 / 機器人狀態\n"
     "/help               顯示此說明\n"
     "(每日 08:00 自動全市場掃描並推播)"
@@ -936,6 +973,13 @@ def handle(chat_id, text):
             return
         code = args[0].strip().upper()
         threading.Thread(target=analyze_job, args=(chat_id, code),
+                         daemon=True).start()
+    elif cmd == "c":
+        prompt = " ".join(args).strip()
+        if not prompt:
+            send(chat_id, "用法: /c <你要 Claude Code 做的事>\n例如: /c 優化策略 D 的停損參數")
+            return
+        threading.Thread(target=claude_job, args=(chat_id, prompt),
                          daemon=True).start()
     else:
         send(chat_id, f"未知指令: {text}\n\n{HELP}")
