@@ -11,7 +11,7 @@
 指令 (亦可用 /menu 叫出按鈕選單, 點一下直接執行):
     /menu               叫出按鈕選單
     /scan               全市場掃描 PA/PB/K/L/D/C 清單 + 進出場點位
-    /year [C,D]         本年度進出清單 (已平倉交易 + 績效摘要)
+    /year [PA,PB,K,L,D,C]  本年度進出清單 (已平倉交易 + 績效摘要, 預設全部策略)
     /info               策略設計說明
     /picks              今日選股
     /analyze 2330       分析個股現況 + 進出場價格 (自動更新資料)
@@ -995,7 +995,7 @@ HELP = (
     "📈 策略機器人指令 (或輸入 /menu 用按鈕):\n"
     "/menu               叫出按鈕選單\n"
     "/scan               全市場掃描 PA/PB/K/L/D/C 清單 + 進出場點位\n"
-    "/year [C,D]         本年度進出清單 + 績效摘要\n"
+    "/year [PA,PB,K,L,D,C]  本年度進出清單 + 績效摘要 (預設全部策略)\n"
     "/info               策略設計說明\n"
     "/picks              今日選股\n"
     "/analyze 2330       個股分析 + 進出場價格\n"
@@ -1026,7 +1026,7 @@ def handle(chat_id, text):
     elif cmd in ("info", "doc"):
         send(chat_id, STRATEGY_INFO)
     elif cmd == "year":
-        strats = args[0] if args else "C,D"
+        strats = args[0] if args else ",".join(SCAN_KEYS)
         threading.Thread(target=year_job, args=(chat_id, strats),
                          daemon=True).start()
     elif cmd == "picks":
@@ -1083,7 +1083,7 @@ def handle_callback(chat_id, data):
     if data == "scan":
         threading.Thread(target=scan_job, args=(chat_id,), daemon=True).start()
     elif data == "year":
-        threading.Thread(target=year_job, args=(chat_id, "C,D"),
+        threading.Thread(target=year_job, args=(chat_id, ",".join(SCAN_KEYS)),
                          daemon=True).start()
     elif data == "chart":
         send_keyboard(chat_id, chart_text(), [[("🔗 開啟儀表板", _web_url())]])
