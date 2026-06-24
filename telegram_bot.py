@@ -739,8 +739,63 @@ def data_update_job(chat_id):
 
 # ── 本年度進出清單 (回測本年已平倉交易) ─────────────────────────────────────
 
-def _year_trades(keys=("C", "D"), progress=None):
-    """回測指定策略, 回傳本年度 (進場或出場落在今年) 的已平倉交易清單 + 績效."""
+def _ledger_path(year):
+    """`sim_log.py` (每日 15:05 盤後 cron) 寫入的逐日累積已平倉交易紀錄。
+    為「凍結」紀錄: 一旦某筆交易寫入, 之後不再重算/覆寫, 不受未來程式碼或資料
+    調整影響, 與 /year 即時重跑回測 (僅當無紀錄檔可用時的備援) 不同。"""
+    return os.path.join(HERE, "picks", f"year_log_{year}.csv")
+
+
+_LEDGER_FIELDS = ["code", "name", "strategy", "entry_date", "entry",
+                  "exit_date", "exit", "pnl", "r"]
+
+
+def _read_ledger(year, keys):
+    path = _ledger_path(year)
+    if not os.path.exists(path):
+        return None
+    rows = []
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            if row["strategy"] in keys:
+                rows.append(row)
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r["entry_date"])
+    return rows
+
+
+def _format_year_rows(rows, year, keys, frozen):
+    if not rows:
+        return (f"📈 {year} 年進出清單 (策略 {'/'.join(keys)})\n\n"
+                f"本年度尚無已平倉交易 (持倉中部位請用 /scan 查看)")
+    total_pnl = sum(float(r["pnl"]) for r in rows)
+    total_r = sum(float(r["r"]) for r in rows)
+    wins = [r for r in rows if float(r["pnl"]) > 0]
+    win_rate = len(wins) / len(rows)
+    avg_r = total_r / len(rows)
+    src = "盤後逐日紀錄 (凍結)" if frozen else "即時回測 (尚無逐日紀錄, 備援重算)"
+    lines = [
+        f"📈 {year} 年進出清單 (策略 {'/'.join(keys)})　[{src}]",
+        f"已平倉 {len(rows)} 筆  勝率 {win_rate:.0%}  均R {avg_r:+.2f}",
+        f"總R {total_r:+.1f}  已實現損益 {total_pnl:+,.0f} 元",
+        "(每筆風險固定 1% 本金; 賣半鎖利會列為獨立一筆)",
+        "",
+    ]
+    for r in rows:
+        nm = f" {r['name']}" if r.get("name") else ""
+        emoji = "🟢" if float(r["pnl"]) > 0 else "🔴"
+        lines.append(
+            f"{emoji} [{r['strategy']}] {r['code']}{nm}\n"
+            f"   進 {r['entry_date'][5:]} {float(r['entry']):.1f} → "
+            f"出 {r['exit_date'][5:]} {float(r['exit']):.1f}  "
+            f"{float(r['r']):+.1f}R ({float(r['pnl']):+,.0f})")
+    return "\n".join(lines)
+
+
+def _year_trades_live(keys, progress=None):
+    """即時重跑回測算本年度已平倉交易 (備援: 供 sim_log.py 尚未寫入紀錄檔的
+    當下/歷史年度使用)。回傳 (rows, year) 格式與 ledger 一致, 供共用格式化。"""
     def note(msg):
         if progress:
             progress(msg)
@@ -782,35 +837,29 @@ def _year_trades(keys=("C", "D"), progress=None):
 
     yt = [t for t in all_tr
           if t["entry_date"] >= ystart or t["exit_date"] >= ystart]
-    yt.sort(key=lambda t: t["entry_date"])
+    rows = [{
+        "code": t["code"], "name": names.get(t["code"], ""),
+        "strategy": t["strategy"],
+        "entry_date": t["entry_date"].strftime("%Y-%m-%d"),
+        "entry": f"{t['entry']:.2f}",
+        "exit_date": t["exit_date"].strftime("%Y-%m-%d"),
+        "exit": f"{t['exit']:.2f}",
+        "pnl": f"{t['pnl']:.2f}", "r": f"{t['r']:.4f}",
+    } for t in yt]
+    rows.sort(key=lambda r: r["entry_date"])
+    return rows, year
 
-    if not yt:
-        return (f"📈 {year} 年進出清單 (策略 {'/'.join(keys)})\n\n"
-                f"本年度尚無已平倉交易 (持倉中部位請用 /scan 查看)")
 
-    wins = [t for t in yt if t["pnl"] > 0]
-    total_pnl = sum(t["pnl"] for t in yt)
-    total_r = sum(t["r"] for t in yt)
-    win_rate = len(wins) / len(yt)
-    avg_r = total_r / len(yt)
-
-    lines = [
-        f"📈 {year} 年進出清單 (策略 {'/'.join(keys)})",
-        f"已平倉 {len(yt)} 筆  勝率 {win_rate:.0%}  均R {avg_r:+.2f}",
-        f"總R {total_r:+.1f}  已實現損益 {total_pnl:+,.0f} 元",
-        "(每筆風險固定 1% 本金; 賣半鎖利會列為獨立一筆)",
-        "",
-    ]
-    for t in yt:
-        nm = names.get(t["code"], "")
-        nm = f" {nm}" if nm else ""
-        emoji = "🟢" if t["pnl"] > 0 else "🔴"
-        lines.append(
-            f"{emoji} [{t['strategy']}] {t['code']}{nm}\n"
-            f"   進 {t['entry_date']:%m/%d} {t['entry']:.1f} → "
-            f"出 {t['exit_date']:%m/%d} {t['exit']:.1f}  "
-            f"{t['r']:+.1f}R ({t['pnl']:+,.0f})")
-    return "\n".join(lines)
+def _year_trades(keys=("PA", "PB", "K", "L", "D"), progress=None):
+    """本年度已平倉交易清單 + 績效。優先讀 sim_log.py 每日盤後寫入的凍結紀錄檔
+    (picks/year_log_<year>.csv); 若該檔尚不存在 (例如 cron 還沒跑過今天, 或查詢
+    去年以前的資料) 才即時重跑回測當備援。"""
+    year = _dt.date.today().year
+    rows = _read_ledger(year, keys)
+    if rows is not None:
+        return _format_year_rows(rows, year, keys, frozen=True)
+    rows, year = _year_trades_live(keys, progress=progress)
+    return _format_year_rows(rows, year, keys, frozen=False)
 
 
 def year_job(chat_id, strats="PA,PB,K,L,D"):
