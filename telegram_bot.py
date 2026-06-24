@@ -648,12 +648,15 @@ def _scan_all(progress=None, keys=None):
     return "\n".join(lines + _watch_lines())
 
 
-def scan_job(chat_id):
+def _refresh_then(chat_id, busy_text, done_text, fail_prefix, work):
+    """共用流程: 取得任務鎖 → 同步全市場+大盤資料(一次) → 執行 work(progress) →
+    回報結果。/scan /picks /year 三個指令都需要「先更新資料再跑」, 故合併於此,
+    避免各自重複實作同一段 refresh+進度回報+鎖+例外處理邏輯。"""
     if not _job_lock.acquire(blocking=False):
         send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
         return
     try:
-        msg_id = send_get_id(chat_id, "⏳ 全市場掃描中...")
+        msg_id = send_get_id(chat_id, busy_text)
         state = {"last": 0.0}
 
         def progress(text):
@@ -662,32 +665,26 @@ def scan_job(chat_id):
                 state["last"] = now
                 edit(chat_id, msg_id, text)
 
-        _full_refresh(progress)        # 先同步全市場 + _TWII 到最新交易日
-        result = _scan_all(progress=progress)
-        edit(chat_id, msg_id, "✅ 掃描完成")
+        _full_refresh(progress)        # 先同步全市場 + _TWII 到最新交易日 (一次)
+        result = work(progress)
+        edit(chat_id, msg_id, done_text)
         send(chat_id, result)
     except Exception as e:  # noqa: BLE001
-        send(chat_id, f"❌ 掃描失敗: {e}")
+        send(chat_id, f"{fail_prefix}: {e}")
     finally:
         _job_lock.release()
+
+
+def scan_job(chat_id):
+    _refresh_then(chat_id, "⏳ 全市場掃描中...", "✅ 掃描完成", "❌ 掃描失敗",
+                 lambda progress: _scan_all(progress=progress))
 
 
 def picks_job(chat_id):
     """今日選股: 先同步全市場 + _TWII 到最新交易日, 再跑 daily_picks.py."""
-    if not _job_lock.acquire(blocking=False):
-        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
-        return
-    try:
-        msg_id = send_get_id(chat_id, "⏳ 同步全市場資料 (含大盤 _TWII)...")
-        _full_refresh()
-        edit(chat_id, msg_id, "⏳ 資料已更新, 跑今日選股中...")
-        out = run_script(["daily_picks.py"])
-        edit(chat_id, msg_id, "✅ 今日選股完成")
-        send(chat_id, out)
-    except Exception as e:  # noqa: BLE001
-        send(chat_id, f"❌ 今日選股失敗: {e}")
-    finally:
-        _job_lock.release()
+    _refresh_then(chat_id, "⏳ 同步全市場資料 (含大盤 _TWII)...",
+                 "✅ 今日選股完成", "❌ 今日選股失敗",
+                 lambda progress: run_script(["daily_picks.py"]))
 
 
 def claude_job(chat_id, prompt):
@@ -817,27 +814,13 @@ def _year_trades(keys=("C", "D"), progress=None):
 
 
 def year_job(chat_id, strats="PA,PB,K,L,D"):
-    if not _job_lock.acquire(blocking=False):
-        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
-        return
-    try:
-        keys = [k.strip().upper() for k in strats.split(",") if k.strip()]
-        msg_id = send_get_id(chat_id, f"⏳ 回測本年度進出 ({'/'.join(keys)})...")
-        state = {"last": 0.0}
-
-        def progress(text):
-            now = time.time()
-            if now - state["last"] >= 1.5:
-                state["last"] = now
-                edit(chat_id, msg_id, text)
-
-        result = _year_trades(keys=keys, progress=progress)
-        edit(chat_id, msg_id, "✅ 本年度進出清單完成")
-        send(chat_id, result)
-    except Exception as e:  # noqa: BLE001
-        send(chat_id, f"❌ 本年度進出失敗: {e}")
-    finally:
-        _job_lock.release()
+    """本年度進出清單: 同樣需先同步資料到最新交易日才能準確算出近期是否進出場
+    (先前漏了這一步, 補上與 /scan /picks 一致的 refresh 流程)。"""
+    keys = [k.strip().upper() for k in strats.split(",") if k.strip()]
+    _refresh_then(
+        chat_id, f"⏳ 同步資料中 (回測本年度進出 {'/'.join(keys)})...",
+        "✅ 本年度進出清單完成", "❌ 本年度進出失敗",
+        lambda progress: _year_trades(keys=keys, progress=progress))
 
 
 # alias for backward-compat callback/menu wiring from origin/main
