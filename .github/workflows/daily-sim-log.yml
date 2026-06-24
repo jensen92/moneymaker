@@ -1,0 +1,56 @@
+name: 每日盤後模擬交易紀錄 (PA/PB/K/L/D)
+
+on:
+  schedule:
+    # 台灣時間 15:05 = UTC 07:05，週一至週五 (收盤後結算)
+    - cron: '5 7 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 需要 push picks/year_log_*.csv
+
+jobs:
+  sim-log:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pandas numpy requests
+
+      - name: Restore stock data cache
+        id: cache-data
+        uses: actions/cache@v4
+        with:
+          path: data_adj/
+          key: stock-data-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            stock-data-${{ runner.os }}-
+
+      - name: Download / update stock data
+        run: python download_all.py
+        env:
+          PYTHONUNBUFFERED: "1"
+
+      - name: Update simulated trading ledger
+        run: python sim_log.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MM_DATA_DIR: data_adj
+
+      - name: Commit ledger
+        run: |
+          git config user.email "noreply@anthropic.com"
+          git config user.name "Claude"
+          git add picks/year_log_*.csv
+          git diff --staged --quiet || git commit -m "模擬交易紀錄 $(date +%Y-%m-%d)"
+          git push
