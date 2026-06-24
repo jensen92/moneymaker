@@ -30,7 +30,7 @@ from strategies import STRATEGIES, add_indicators, _d_features
 # .strip() 防止 Secret 值前後夾帶空白/tab 導致 Telegram API 拒絕
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-SCAN_KEYS = ["PA", "PB", "K", "L", "D", "C"]
+SCAN_KEYS = ["PA", "PB", "K", "L", "D"]
 PICKS_DIR = Path(__file__).parent / "picks"
 PICKS_DIR.mkdir(exist_ok=True)
 
@@ -188,7 +188,7 @@ def main():
              "D": "PF1.46 勝47%", "C": "PF1.58 勝49%"}
 
     if not regime_ok:
-        lines.append("今日大盤偏弱，PA/PB/D/C 均不進場")
+        lines.append("今日大盤偏弱，PA/PB/D 均不進場")
         lines.append("")
     else:
         for key in SCAN_KEYS:

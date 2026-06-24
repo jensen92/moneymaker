@@ -10,8 +10,8 @@
 
 指令 (亦可用 /menu 叫出按鈕選單, 點一下直接執行):
     /menu               叫出按鈕選單
-    /scan               全市場掃描 PA/PB/K/L/D/C 清單 + 進出場點位
-    /year [PA,PB,K,L,D,C]  本年度進出清單 (已平倉交易 + 績效摘要, 預設全部策略)
+    /scan               全市場掃描 PA/PB/K/L/D 清單 + 進出場點位
+    /year [PA,PB,K,L,D]  本年度進出清單 (已平倉交易 + 績效摘要, 預設全部策略)
     /info               策略設計說明
     /picks              今日選股
     /analyze 2330       分析個股現況 + 進出場價格 (自動更新資料)
@@ -66,7 +66,7 @@ API = f"https://api.telegram.org/bot{TOKEN}"
 YF_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
 
 # 與每日報告 (github_scan.py) 一致的掃描策略組合
-SCAN_KEYS = ["PA", "PB", "K", "L", "D", "C"]
+SCAN_KEYS = ["PA", "PB", "K", "L", "D"]
 
 _job_lock = threading.Lock()
 
@@ -263,7 +263,7 @@ def _update_stock_data(code):
 
 
 def _analyze_stock(code, progress=None):
-    """下載最新資料, 用策略 PA/PB/K/L/D/C 分析現況, 回傳文字報告.
+    """下載最新資料, 用策略 PA/PB/K/L/D 分析現況, 回傳文字報告.
 
     progress: 可選 callback(text), 用於即時回報掃描進度.
     """
@@ -490,7 +490,7 @@ def analyze_job(chat_id, code):
 def _scan_all(progress=None, keys=None):
     """掃全市場, 回傳符合 keys 任一策略的清單 (標注複合命中 + 進出場點位).
 
-    keys 預設 = SCAN_KEYS (PA/PB/K/L/D/C), 與每日報告一致.
+    keys 預設 = SCAN_KEYS (PA/PB/K/L/D), 與每日報告一致.
     """
     keys = keys or SCAN_KEYS
 
@@ -816,7 +816,7 @@ def _year_trades(keys=("C", "D"), progress=None):
     return "\n".join(lines)
 
 
-def year_job(chat_id, strats="C,D"):
+def year_job(chat_id, strats="PA,PB,K,L,D"):
     if not _job_lock.acquire(blocking=False):
         send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
         return
@@ -994,8 +994,8 @@ def scheduler_loop():
 HELP = (
     "📈 策略機器人指令 (或輸入 /menu 用按鈕):\n"
     "/menu               叫出按鈕選單\n"
-    "/scan               全市場掃描 PA/PB/K/L/D/C 清單 + 進出場點位\n"
-    "/year [PA,PB,K,L,D,C]  本年度進出清單 + 績效摘要 (預設全部策略)\n"
+    "/scan               全市場掃描 PA/PB/K/L/D 清單 + 進出場點位\n"
+    "/year [PA,PB,K,L,D]  本年度進出清單 + 績效摘要 (預設全部策略)\n"
     "/info               策略設計說明\n"
     "/picks              今日選股\n"
     "/analyze 2330       個股分析 + 進出場價格\n"
@@ -1033,7 +1033,7 @@ def handle(chat_id, text):
         threading.Thread(target=picks_job, args=(chat_id,),
                          daemon=True).start()
     elif cmd == "backtest":
-        strats = args[0] if args else "C,D"
+        strats = args[0] if args else ",".join(SCAN_KEYS)
         threading.Thread(
             target=heavy_job,
             args=(chat_id, f"回測 {strats}",
