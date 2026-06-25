@@ -23,3 +23,4 @@ optimize_e_results.csv
 optimize_pf_results.csv
 *.log
 web_cache/
+fundamentals/
