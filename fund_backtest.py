@@ -87,7 +87,8 @@ def metrics(trades, curve, init_eq):
             "totR": sum(t["r"] for t in trades)}
 
 
-def run_set(data, sigs, all_dates, date_idx, regime_tiers, vol_scalars):
+def run_set(data, sigs, all_dates, date_idx, regime_tiers, vol_scalars,
+            earnings_db=None, earn_days=0, earn_gain=0.10):
     init_eq = INIT_CAPITAL / len(ORDER)
     rows = {}
     yR = {}
@@ -95,7 +96,10 @@ def run_set(data, sigs, all_dates, date_idx, regime_tiers, vol_scalars):
         em = build_entry_map(sigs[k], data)
         trades, curve = run_sub(data, em, k, 1.0, init_eq,
                                 all_dates=all_dates, date_idx=date_idx,
-                                regime_tiers=regime_tiers, vol_scalars=vol_scalars)
+                                regime_tiers=regime_tiers, vol_scalars=vol_scalars,
+                                earnings_db=earnings_db,
+                                earnings_avoid_days=earn_days,
+                                earnings_min_gain=earn_gain)
         rows[k] = metrics(trades, curve, init_eq)
         by = defaultdict(float)
         for t in trades:
@@ -119,6 +123,9 @@ def main():
     ap.add_argument("--eps", type=float, default=0.0)
     ap.add_argument("--roe", type=float, default=0.15)
     ap.add_argument("--missing", choices=["fail", "pass"], default="fail")
+    ap.add_argument("--earn-days", type=int, default=7,
+                    help="財報發布前避險天數 (0=停用該模組驗證)")
+    ap.add_argument("--earn-gain", type=float, default=0.10)
     args = ap.parse_args()
 
     print("載入 data_adj...")
@@ -149,6 +156,16 @@ def main():
     print(f"\n{'='*70}\n基本面門檻回測對照 (2011-2026, data_adj 全市場)\n{'='*70}")
     ptable("【baseline 無基本面門檻】", base_rows)
     ptable(f"【gated EPS>={args.eps:.0%} ROE>={args.roe:.0%}】", gate_rows)
+
+    # 第三變體: 選股門檻 + 財報發布前避險 (部位管理模組)
+    if args.earn_days > 0:
+        print(f"\n套用財報避險: 發布前 {args.earn_days} 日內且帳上獲利 "
+              f"< {args.earn_gain:.0%} → 先出場")
+        ev_rows, ev_yR = run_set(data, gated, all_dates, date_idx,
+                                 regime_tiers, vol_scalars,
+                                 earnings_db=db, earn_days=args.earn_days,
+                                 earn_gain=args.earn_gain)
+        ptable(f"【gated + 財報避險 {args.earn_days}日/{args.earn_gain:.0%}】", ev_rows)
 
     print(f"\n{'差異 (gated - baseline)':>4}")
     print(f"{'策略':>4} {'交易Δ':>7} {'PFΔ':>7} {'年化Δ':>8} {'回撤Δ':>8} {'MARΔ':>7}")

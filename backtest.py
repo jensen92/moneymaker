@@ -293,6 +293,16 @@ def _climax_run(df, di, p):
     return climax or extended
 
 
+def _near_earnings(earnings_db, code, d, avoid_days):
+    """下次財報法定發布日是否落在 d 之後 avoid_days 個日曆日內 (含當日)。"""
+    nxt = earnings_db.next_earnings(code, d)
+    if nxt is None:
+        return False
+    cur = d.date() if hasattr(d, "date") else d
+    delta = (nxt - cur).days
+    return 0 <= delta <= avoid_days
+
+
 def _is_limit_day(df, di):
     """日振幅 < LIMIT_RANGE_THRESH 視為漲停或跌停封板 (台灣 ±10%)."""
     row = df.iloc[di]
@@ -303,13 +313,19 @@ def _is_limit_day(df, di):
 
 def run_sub(data, entry_map, strategy_key, leverage, init_eq,
             all_dates=None, date_idx=None,
-            regime_tiers=None, vol_scalars=None):
+            regime_tiers=None, vol_scalars=None,
+            earnings_db=None, earnings_avoid_days=0, earnings_min_gain=0.10):
     """單一策略子帳戶回測.
 
     all_dates / date_idx 可預先以 build_date_index 算好傳入 (參數掃描加速).
     regime_tiers  : {date: 0/1/2} 三段式市況; None = 停用 (全部視為 tier 2)
     vol_scalars   : {date: float} 波動標量; None = 停用 (全部 1.0)
+    earnings_db   : fundamentals.FundamentalDB; 提供時啟用「財報發布前避險」部位管理:
+                    若下次財報法定發布日在 earnings_avoid_days 日內, 且該部位帳上
+                    獲利 < earnings_min_gain, 則於前一交易日收盤先行出場 (規避財報跳空)。
+                    None = 完全停用 (預設, 行為與原版一致)。
     """
+    earn_on = earnings_db is not None and earnings_avoid_days > 0
     max_pos = MAX_POS[strategy_key]
     dd_pause = DD_PAUSE[strategy_key]
     dd_resume = DD_RESUME[strategy_key]
@@ -361,6 +377,12 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                 exit_price = row["close"]   # 衝頂強勢賣出
             elif p.get("minervini") and row["close"] < row["ma50"]:
                 exit_price = row["close"]   # 跌破 50 日線全部出場
+            elif (earn_on
+                  and (row["close"] / p.get("init_entry", p["entry"]) - 1.0)
+                      < earnings_min_gain
+                  and _near_earnings(earnings_db, p["code"], d,
+                                     earnings_avoid_days)):
+                exit_price = row["close"]   # 財報發布前帳上獲利不足 → 規避跳空風險
             elif di >= p["expire_idx"]:
                 exit_price = row["close"]
 
