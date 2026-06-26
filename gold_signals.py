@@ -109,28 +109,44 @@ def main():
 
     m = gs.metrics(gs.backtest())
 
+    stop_mult = cfg["atr_stop"]
+
+    def risk_str(entry, stop):
+        pts = abs(entry - stop)
+        return f"(風險 {pts:,.2f} 點 ≈ ${pts * gs.POINT_VALUE:,.0f}/口)"
+
     # (1) 回測一致訊號: 最後『已完成』棒是否突破其前 bo 根高點 → 確認進場
     sig = gs.signal_breakout(h, l, c, i, cfg, a)
     if sig == 1:
-        stop = bar_close - cfg["atr_stop"] * atr_now
+        stop = bar_close - stop_mult * atr_now
         print(f"\n🟢 確認進場 (做多): 最後完成棒收盤突破過去{bo}H高點")
-        print(f"   進場價 {bar_close:,.2f}   停損價 {stop:,.2f}  "
-              f"(風險 {bar_close - stop:,.2f} 點 ≈ ${(bar_close - stop) * gs.POINT_VALUE:,.0f}/口)")
-        print("   停利: 無固定停利, 以 ATR 移動停損追蹤獲利 (價格回落跌破停損即出場)")
+        print(f"   進場價: {bar_close:,.2f}")
+        print(f"   停損價: {stop:,.2f}  {risk_str(bar_close, stop)}")
+        print(f"   停利價: 無固定停利 — 停損價隨每根新K棒以 收盤-{stop_mult}×ATR 上移鎖利, 跌破即出場")
     elif sig == -1:
-        stop = bar_close + cfg["atr_stop"] * atr_now
+        stop = bar_close + stop_mult * atr_now
         print(f"\n🔴 確認進場 (做空): 最後完成棒收盤跌破過去{bo}H低點")
-        print(f"   進場價 {bar_close:,.2f}   停損價 {stop:,.2f}")
+        print(f"   進場價: {bar_close:,.2f}")
+        print(f"   停損價: {stop:,.2f}  {risk_str(bar_close, stop)}")
+        print(f"   停利價: 無固定停利 — 停損價隨每根新K棒以 收盤+{stop_mult}×ATR 下移鎖利, 突破即出場")
     elif live > next_level:
         # (2) 即時價已越過突破參考價, 但本小時尚未收盤 → 待收盤確認
-        stop = live - cfg["atr_stop"] * atr_now
-        print(f"\n🟡 即時突破中 (待本小時收盤確認): 即時價 {live:,.2f} > 突破參考價 {next_level:,.2f}")
-        print(f"   若收在 {next_level:,.2f} 之上即確認做多, 參考停損 {stop:,.2f}")
+        stop = live - stop_mult * atr_now
+        print(f"\n🟡 即時突破中 (待本小時 {bo}H 收盤確認)")
+        print(f"   進場價(預估): {live:,.2f}  (即時價已 > 突破參考價 {next_level:,.2f}, 收盤確認後成立)")
+        print(f"   停損價(預估): {stop:,.2f}  {risk_str(live, stop)}")
+        print(f"   停利價: 無固定停利 — 確認進場後以 ATR 移動停損追蹤")
         print("   (回測規則以小時收盤確認; 此為即時預警, 供提前準備下單)")
     else:
+        # (3) 尚未觸發 — 仍給出『預備下單計劃』的進場/停損/停利價
         gap = (next_level - live) / live
-        print(f"\n⚪ 無新進場訊號。即時價距突破做多還差 {next_level - live:,.2f} 點 ({gap:+.2%})。")
-        print("   (持有中部位請依 ATR 移動停損規則管理出場)")
+        plan_stop = next_level - stop_mult * atr_now
+        print(f"\n⚪ 目前無進場訊號 (即時價距突破做多還差 {next_level - live:,.2f} 點 {gap:+.2%})")
+        print("   預備計劃 (做多, 待突破才成立):")
+        print(f"   進場價: 即時價突破 {next_level:,.2f} (過去{bo}H高) 並站上即進場")
+        print(f"   停損價(預估): {plan_stop:,.2f}  {risk_str(next_level, plan_stop)}")
+        print(f"   停利價: 無固定停利 — 進場後以 收盤-{stop_mult}×ATR 移動停損追蹤鎖利")
+        print("   (持有中部位請依上述 ATR 移動停損規則管理出場)")
 
     print(f"\n策略歷史績效 ({m['n']}筆, 2024-2026): 勝率 {m['win']:.1%}  PF {m['pf']:.2f}  "
           f"最大回撤 ${m['dd']:,.0f}  MAR {m['mar']:.2f}")
