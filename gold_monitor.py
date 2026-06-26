@@ -30,7 +30,19 @@ STALE_MIN = 30   # 小時資料超過此分鐘數才重抓 (節省 Yahoo 請求)
 
 _last_hourly_fetch = 0.0
 
-_PERF = "策略回測: 勝率48.3% PF1.88 最大DD$29,700 MAR6.28 (147筆/2024-2026)"
+
+def _perf_line():
+    """動態跑一次回測算績效, 確保通知裡的數字與當前策略/資料同步
+    (避免寫死的快照隨資料增長而失真; 與 gold_signals 同一來源)。"""
+    try:
+        m = gs.metrics(gs.backtest())
+        return (f"策略回測: 勝率{m['win']:.1%} PF{m['pf']:.2f} "
+                f"最大DD${m['dd']:,.0f} MAR{m['mar']:.2f} ({m['n']}筆/2024-2026)")
+    except Exception:
+        return "策略回測: 順勢突破 (詳見 gold_signals)"
+
+
+_PERF = _perf_line()
 
 
 def _load_state():
