@@ -105,9 +105,11 @@ def check_live():
                      "last_bar": bar_ts, "alerted_level": None}
             alert = (
                 f"🟢 黃金確認進場 (做多) — {bar_ts} 台北時間收盤突破過去{bo}H高\n"
-                f"進場價 {bar_close:,.2f}  初始停損 {stop:,.2f}  "
+                f"進場價: {bar_close:,.2f}\n"
+                f"初始停損價: {stop:,.2f}  "
                 f"(風險 {bar_close - stop:,.2f} 點 ≈ ${(bar_close - stop) * gs.POINT_VALUE:,.0f}/口)\n"
-                f"出場: 無固定停利, 隨 ATR 移動停損追蹤, 跌破即出場\n{_PERF}"
+                f"停利: 無固定停利價, 停損價會隨每根新K棒以 收盤-{cfg['atr_stop']}×ATR 往上移動鎖利, "
+                f"即時價跌破當前停損價即出場\n{_PERF}"
             )
         elif cfg["allow_short"] and sig == -1:
             stop = bar_close + cfg["atr_stop"] * atr_now
@@ -115,7 +117,11 @@ def check_live():
                      "last_bar": bar_ts, "alerted_level": None}
             alert = (
                 f"🔴 黃金確認進場 (做空) — {bar_ts} 台北時間收盤跌破過去{bo}H低\n"
-                f"進場價 {bar_close:,.2f}  初始停損 {stop:,.2f}\n{_PERF}"
+                f"進場價: {bar_close:,.2f}\n"
+                f"初始停損價: {stop:,.2f}  "
+                f"(風險 {stop - bar_close:,.2f} 點 ≈ ${(stop - bar_close) * gs.POINT_VALUE:,.0f}/口)\n"
+                f"停利: 無固定停利價, 停損價會隨每根新K棒以 收盤+{cfg['atr_stop']}×ATR 往下移動鎖利, "
+                f"即時價突破當前停損價即出場\n{_PERF}"
             )
         elif price > up_level and state["alerted_level"] != round(up_level, 1):
             # 即時突破預警 (本小時尚未收盤, 待收盤確認), 每個突破價只報一次
@@ -124,9 +130,12 @@ def check_live():
             state["last_bar"] = bar_ts
             alert = (
                 f"🟡 黃金即時突破預警 (待本小時收盤確認)\n"
-                f"即時價 {price:,.2f} 已越過突破參考價 {up_level:,.2f} "
-                f"(過去{bo}H高)\n"
-                f"若收在 {up_level:,.2f} 之上即確認做多, 參考停損 {stop:,.2f} — 可提前準備下單\n"
+                f"即時價: {price:,.2f}\n"
+                f"突破參考價(過去{bo}H高): {up_level:,.2f}\n"
+                f"若收在 {up_level:,.2f} 之上即確認做多:\n"
+                f"  進場價(預估=目前收盤前即時價): {price:,.2f}\n"
+                f"  參考停損價: {stop:,.2f} — 可提前準備下單\n"
+                f"停利: 無固定停利, 確認進場後以 ATR 移動停損追蹤\n"
                 f"(回測以小時收盤確認, 此為即時預警)"
             )
         else:
@@ -138,8 +147,10 @@ def check_live():
         if price <= state["trail"]:
             pnl = (price - state["entry"]) * gs.POINT_VALUE
             alert = (
-                f"⛔ 黃金多單觸發移動停損, 出場 (即時價)\n"
-                f"進場 {state['entry']:,.2f} → 出場 {price:,.2f}  "
+                f"⛔ 黃金多單觸發移動停損, 出場\n"
+                f"進場價: {state['entry']:,.2f}\n"
+                f"停損價(觸發): {state['trail']:,.2f}\n"
+                f"出場價(即時價): {price:,.2f}\n"
                 f"損益 ${pnl:+,.0f}/口 (未計滑價手續費)"
             )
             state = {"pos": 0, "entry": None, "trail": None,
@@ -151,8 +162,10 @@ def check_live():
         if price >= state["trail"]:
             pnl = (state["entry"] - price) * gs.POINT_VALUE
             alert = (
-                f"⛔ 黃金空單觸發移動停損, 出場 (即時價)\n"
-                f"進場 {state['entry']:,.2f} → 出場 {price:,.2f}  "
+                f"⛔ 黃金空單觸發移動停損, 出場\n"
+                f"進場價: {state['entry']:,.2f}\n"
+                f"停損價(觸發): {state['trail']:,.2f}\n"
+                f"出場價(即時價): {price:,.2f}\n"
                 f"損益 ${pnl:+,.0f}/口 (未計滑價手續費)"
             )
             state = {"pos": 0, "entry": None, "trail": None,
