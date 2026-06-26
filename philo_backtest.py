@@ -54,12 +54,14 @@ def build_new_signals(data, rs, risk_on, keys):
     return sigs
 
 
-def gate_fundamental(bydate, db, eps_min, roe_min, missing):
-    """O 的基本面疊加 (PIT): EPS年增>=eps_min 且 ROE>=roe_min。回傳 (gated, 通過率)。"""
+def gate_fundamental(bydate, db, c_min, a_min, roe_min, missing):
+    """O 的 CAN SLIM 基本面疊加 (PIT): C 當季EPS年增>=c_min 且 A 年度EPS成長>=a_min
+    且 ROE>=roe_min。回傳 (gated, 通過率)。"""
     out = {}
     kept = total = 0
     for d, lst in bydate.items():
-        keep = [t for t in lst if db.passes(t[1], d, eps_min, roe_min, missing)]
+        keep = [t for t in lst
+                if db.canslim(t[1], d, c_min, a_min, roe_min, missing)]
         total += len(lst)
         kept += len(keep)
         if keep:
@@ -102,10 +104,13 @@ def main():
     print("載入基本面 PIT 資料庫 (CAN SLIM 的 C/A)...")
     db = FundamentalDB()
     print(f"  快取標的數: {len(db.q)}")
-    o_full, keep_full = gate_fundamental(
-        new_sigs["O"], db, st.O_CONFIG["eps_yoy_min"], st.O_CONFIG["roe_min"], "fail")
-    o_pass, keep_pass = gate_fundamental(
-        new_sigs["O"], db, st.O_CONFIG["eps_yoy_min"], st.O_CONFIG["roe_min"], "pass")
+    c_min = st.O_CONFIG["eps_yoy_min"]
+    a_min = st.O_CONFIG["ann_growth_min"]
+    roe_min = st.O_CONFIG["roe_min"]
+    o_full, keep_full = gate_fundamental(new_sigs["O"], db, c_min, a_min, roe_min, "fail")
+    o_pass, keep_pass = gate_fundamental(new_sigs["O"], db, c_min, a_min, roe_min, "pass")
+    # 寬鬆 CAN SLIM (C>=20% A>=10% ROE>=15%): 觀察門檻鬆緊敏感度 (台股嚴版樣本少)
+    o_relax, keep_relax = gate_fundamental(new_sigs["O"], db, 0.20, 0.10, 0.15, "fail")
 
     print("回測中 (各策略獨立子帳戶)...")
     rows, yRs = {}, {}
@@ -117,14 +122,16 @@ def main():
                                   regime_tiers, vol_scalars, k, init_eq)
     rows["O+F"], yRs["O+F"] = run_one(data, o_full, all_dates, date_idx,
                                       regime_tiers, vol_scalars, "O", init_eq)
+    rows["O+Fr"], yRs["O+Fr"] = run_one(data, o_relax, all_dates, date_idx,
+                                        regime_tiers, vol_scalars, "O", init_eq)
     rows["O+Fp"], yRs["O+Fp"] = run_one(data, o_pass, all_dates, date_idx,
                                         regime_tiers, vol_scalars, "O", init_eq)
 
     LABEL = {"PA": "PA 現行", "PB": "PB 現行", "K": "K 現行", "L": "L 現行",
              "D": "D 現行", "M": "M 道氏理論", "N": "N 李佛摩",
-             "O": "O 歐尼爾(純技術)", "O+F": "O CANSLIM(技+基本面)",
-             "O+Fp": "O CANSLIM(基本面放行)"}
-    order = PROD + NEW + ["O+F", "O+Fp"]
+             "O": "O 歐尼爾(純技術)", "O+F": "O CANSLIM(嚴 C25/A25/ROE17)",
+             "O+Fr": "O CANSLIM(寬 C20/A10/ROE15)", "O+Fp": "O CANSLIM(無資料放行)"}
+    order = PROD + NEW + ["O+F", "O+Fr", "O+Fp"]
 
     print(f"\n{'='*88}")
     print("三大交易哲學 vs 現行生產策略 (2011-2026, data_adj 全市場, 各策略等額 40 萬子帳戶)")
@@ -136,8 +143,10 @@ def main():
         print(f"{LABEL[k]:<24}{m['n']:>5}{m['win']:>7.1%}{m['pf']:>6.2f}"
               f"{m['cagr']:>7.1%}{m['dd']:>7.1%}{m['mar']:>6.2f}{m['totR']:>+8.0f}")
 
-    print(f"\nO 歐尼爾基本面 (EPS年增>=25% & ROE>=17%) 通過率: "
-          f"剔除無資料 {keep_full:.1%} / 放行無資料 {keep_pass:.1%}")
+    print(f"\nO CAN SLIM 基本面通過率 (O 原始技術訊號為母體):")
+    print(f"  嚴版 C>={c_min:.0%} A>={a_min:.0%} ROE>={roe_min:.0%}: {keep_full:.1%}"
+          f"  |  寬版 C>=20% A>=10% ROE>=15%: {keep_relax:.1%}"
+          f"  |  放行無資料: {keep_pass:.1%}")
 
     years = sorted({y for k in order for y in yRs[k]})
     cols = PROD + NEW + ["O+F"]

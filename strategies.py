@@ -1181,10 +1181,11 @@ def _dow_swings(df, i, lookback, w):
 def signal_m(df, i, rs_rank=None):
     """道氏理論主趨勢延續 (策略 M) — HH/HL 結構 + 擺動高點突破 + 量能確認.
 
-    進場: 多頭背景 (close>ma200, ma50>ma200, ma200 上升) + 最近兩個擺動高點遞升
-    (HH) + 最近兩個擺動低點遞升 (HL) + 今日收盤『當日新破』最近擺動高點 + 突破量
-    > 50 日均量。停損: 跌破最近更高低點 (結構受損), 4~12% 內。出場: ATR 移動停損
-    讓主趨勢奔跑, 最長 150 日 (非 minervini, 不賣半 — 道氏騎主趨勢)。
+    進場: 多頭背景 (close>ma200, ma50>ma200, ma200 上升) + 最近『三個』擺動高點
+    連續遞升 (HH) 且最近三個擺動低點連續遞升 (HL, 道氏「一系列」更高高/更高低) +
+    今日收盤『當日新破』最近擺動高點 + 突破量 > 50 日均量。停損: 跌破最近更高低點
+    (結構受損), 4~12% 內。出場: ATR 移動停損讓主趨勢奔跑, 最長 150 日
+    (非 minervini, 不賣半 — 道氏騎主趨勢)。
     """
     cfg = M_CONFIG
     if i < 200:
@@ -1202,9 +1203,12 @@ def signal_m(df, i, rs_rank=None):
             and row["ma200"] > df["ma200"].iloc[i - 21]):
         return None
     highs, lows = _dow_swings(df, i, cfg["lookback"], cfg["swing_w"])
-    if len(highs) < 2 or len(lows) < 2:
+    if len(highs) < 3 or len(lows) < 3:
         return None
-    if not (highs[-1][1] > highs[-2][1] and lows[-1][1] > lows[-2][1]):
+    # 道氏「主趨勢 = 一系列更高的高點 + 更高的低點」: 取最近三個已確認擺動點,
+    # 要求高點與低點皆連續遞升 (非單一 HH/HL 對, 而是持續的多腳結構)。
+    if not (highs[-1][1] > highs[-2][1] > highs[-3][1]
+            and lows[-1][1] > lows[-2][1] > lows[-3][1]):
         return None
     last_high, last_low = highs[-1][1], lows[-1][1]
     prev_close = df["close"].iloc[i - 1]
@@ -1321,17 +1325,23 @@ def signal_n(df, i, rs_rank=None):
 # 策略 O — 歐尼爾 CAN SLIM (William O'Neil《笑傲股市》, 完整版含基本面)
 # ─────────────────────────────────────────────────────────────
 # CAN SLIM 七要素, 本策略可量化者:
-#   C 當季 EPS 年增 >= 25%  ─┐ 基本面 (由 fundamentals.py 以 point-in-time 提供;
-#   A 年度 ROE     >= 17%  ─┘ 於回測/掃描端用 FundamentalDB 疊加, 杜絕前視)
+#   C 當季 EPS 年增 >= 25%      ─┐ 基本面 (由 fundamentals.py 以 point-in-time 提供;
+#   A 年度 (TTM) EPS 成長 >= 25% ─┤ 於回測/掃描端用 FundamentalDB.canslim 疊加, 杜絕
+#   + ROE >= 17% (報酬品質輔助篩) ─┘ 前視)。註: O'Neil 的『A』本義是『年度盈餘成長』
+#     (本檔以 近四季TTM EPS vs 去年TTM EPS 近似), ROE 17% 是其報酬品質輔助條件, 非 A 本身。
 #   N 創新高 / 突破整理 base: 收盤接近 52 週高 + 突破近 25 日 base 高 (買點 pivot)
 #   S 量能 (供需): 突破量 >= 1.5× 50 日均量
 #   L 領導股: RS 排名 >= 0.80
 #   I 法人認養: 價量/財報資料不足, 略過 (誠實註記)
 #   M 大盤方向: 由引擎市況濾網統一處理 (與其他策略一致)
-# signal_o 只負責技術面 (N/S/L + Stage2); 基本面 C/A 因 signal 函式無 DB/code 存取,
-# 改由 philo_backtest 以 FundamentalDB 疊加成「完整 CAN SLIM」, 並另出純技術版對照,
-# 量化基本面 C/A 的實際貢獻。與既有策略 I (杯柄幾何) 互補: I 偵測 CwH 型態, O 是
-# base 突破 + 領導 + 基本面篩 (CAN SLIM 的選股精神)。
+# signal_o 只負責技術面 (N/S/L + Stage2); 基本面 C/A/ROE 因 signal 函式無 DB/code 存取,
+# 改由 philo_backtest 以 FundamentalDB.canslim 疊加成「完整 CAN SLIM」(O+F), 並另出純
+# 技術版 (O) 對照, 量化基本面 C/A/ROE 的實際貢獻。
+# 【刻意的設計取捨 — 與 B/K/L 的關係】O 的『技術面』本質上與 B/K/L 同源 (同 Stage2
+# 模板 + 近 52 週高 + 量能突破近端 base + 不追高 + minervini 出場), 差別僅在 base 窗
+# (25 vs 20)、當日新破守則, 以及『不』套 K/L 的 ATR 收縮/量縮門檻。因此純技術版 O 與
+# B/K/L 高度重疊是預期的 — O 的獨特價值來自 CAN SLIM 的基本面選股 (C/A/ROE) 疊加,
+# 故結果應以 O+F (含基本面) 為主, O (純技術) 僅作為量化基本面貢獻的對照基準。
 O_CONFIG = {
     "base_high":    25,    # base 突破回顧 (O'Neil pivot buy point)
     "prox_52wh":    0.90,  # 收盤 >= 52 週高 × 此值 (創新高區)
@@ -1342,9 +1352,10 @@ O_CONFIG = {
     "max_hold":     9999,  # minervini 模式: MA50 移動停損 / +20% 賣半
     "min_price":    10.0,
     "min_turnover": 50_000_000,
-    # 基本面門檻 (供 philo_backtest 疊加; 不在 signal 內套, 因 signal 無 DB/code)
-    "eps_yoy_min":  0.25,
-    "roe_min":      0.17,
+    # 基本面門檻 (供 philo_backtest 以 FundamentalDB.canslim 疊加; 不在 signal 內套)
+    "eps_yoy_min":  0.25,   # C: 當季 EPS 年增
+    "ann_growth_min": 0.25, # A: 年度 (TTM) EPS 成長
+    "roe_min":      0.17,   # ROE 品質輔助篩
 }
 
 

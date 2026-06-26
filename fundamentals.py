@@ -240,6 +240,40 @@ class FundamentalDB:
             return missing == "pass"
         return eps_yoy >= eps_yoy_min and roe >= roe_min
 
+    def eps_annual_growth(self, code, date):
+        """O'Neil CAN SLIM 的『A』: 年度 (TTM) EPS 成長率, PIT。
+
+        近四季 EPS 合計 vs 前四季 EPS 合計 (TTM vs 去年 TTM)。需 >= 8 季資料,
+        且該八季 EPS 皆有值才計算 (否則 None)。由虧轉盈視為 +100%, 由盈轉虧 -100%。
+        """
+        avail = self._as_of(code, date)
+        if len(avail) < 8:
+            return None
+        ttm_now = [r[2] for r in avail[-4:]]
+        ttm_prev = [r[2] for r in avail[-8:-4]]
+        if any(x is None for x in ttm_now) or any(x is None for x in ttm_prev):
+            return None
+        s_now, s_prev = sum(ttm_now), sum(ttm_prev)
+        if s_prev > 0:
+            return s_now / s_prev - 1.0
+        if s_prev <= 0 < s_now:
+            return 1.0
+        return -1.0
+
+    def canslim(self, code, date, c_min=0.25, a_min=0.25, roe_min=0.17,
+                missing="fail"):
+        """O'Neil CAN SLIM 基本面三要素 (PIT):
+          C 當季 EPS 年增 >= c_min
+          A 年度 (TTM) EPS 成長 >= a_min
+          + ROE >= roe_min (O'Neil 的報酬品質輔助篩, 非 A 本身)
+        三者皆須通過。missing: 任一資料缺漏時的處置 ('fail' 剔除 / 'pass' 放行)。
+        """
+        eps_yoy, roe = self.metrics(code, date)
+        ann = self.eps_annual_growth(code, date)
+        if eps_yoy is None or roe is None or ann is None:
+            return missing == "pass"
+        return eps_yoy >= c_min and ann >= a_min and roe >= roe_min
+
     def next_earnings(self, code, date):
         """回傳 date 之後最近的財報法定發布日 (用於財報避險); 無資料用通用排程。"""
         if hasattr(date, "date"):
