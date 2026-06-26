@@ -79,22 +79,26 @@ def main():
     print(f"最新收盤 {price:,.2f}  |  過去{bo}H高 {hh:,.2f}  低 {ll:,.2f}  "
           f"|  ATR {atr_now:,.2f}")
 
+    m = gs.metrics(gs.backtest())
+
     sig = gs.signal_breakout(h, l, c, i, cfg, a)
     if sig == 1:
         stop = price - cfg["atr_stop"] * atr_now
         print(f"\n🟢 進場訊號: 做多 (突破過去{bo}H高點)")
-        print(f"   參考進場 {price:,.2f}  初始停損 {stop:,.2f}  "
+        print(f"   進場價 {price:,.2f}   停損價 {stop:,.2f}  "
               f"(風險 {price - stop:,.2f} 點 ≈ ${(price - stop) * gs.POINT_VALUE:,.0f}/口)")
+        print("   停利: 無固定停利, 以 ATR 移動停損追蹤獲利 (價格回落跌破停損即出場)")
     elif sig == -1:
         stop = price + cfg["atr_stop"] * atr_now
         print(f"\n🔴 進場訊號: 做空 (跌破過去{bo}H低點)")
-        print(f"   參考進場 {price:,.2f}  初始停損 {stop:,.2f}")
+        print(f"   進場價 {price:,.2f}   停損價 {stop:,.2f}")
     else:
         gap = (hh - price) / price
         print(f"\n⚪ 無新進場訊號。距突破做多還差 {hh - price:,.2f} 點 ({gap:+.2%})。")
         print("   (持有中部位請依 ATR 移動停損規則管理出場)")
 
-    print("\n依小時線收盤確認; 黃金近24個月回測 PF 1.83 / MAR 6.07 (gold_strategies.py)。")
+    print(f"\n策略歷史績效 ({m['n']}筆, 2024-2026): 勝率 {m['win']:.1%}  PF {m['pf']:.2f}  "
+          f"最大回撤 ${m['dd']:,.0f}  MAR {m['mar']:.2f}")
 
 
 if __name__ == "__main__":
