@@ -1137,7 +1137,337 @@ def signal_l(df, i, rs_rank=None):
     return _d_signal(_d_features(df, i, rs_rank), L_CONFIG)
 
 
+# ─────────────────────────────────────────────────────────────
+# 策略 M — 道氏理論主趨勢延續 (Dow Theory primary-trend continuation)
+# ─────────────────────────────────────────────────────────────
+# Charles Dow 六大原則中可量化者:
+#   * 主要趨勢 = 一系列「更高的高點 + 更高的低點」(HH/HL 結構)。
+#   * 量能須確認趨勢 (上升段量增)。
+#   * 兩種平均須互相印證 — 個股版以「大盤 (TWII) 同處多頭」代理, 由引擎的市況
+#     濾網 (risk_on) 統一套用 (與所有策略一致), 故 signal 端不另接指數。
+#   * 趨勢延續至明確反轉 (較低高點後跌破前低) → 以「跌破最近的更高低點」為結構性
+#     停損, 並用 ATR 移動停損讓主趨勢奔跑 (近似道氏「持有至反轉訊號」)。
+# 與 C/D (VCP 波動收縮突破) 不同: M 不要求量縮/收縮, 而是辨識擺動點 HH/HL 結構,
+# 於「突破最近擺動高點 (延續主趨勢) 且量能確認」時進場。前視防護: 擺動點 j 須為
+# [j-w, j+w] 區間極值, 故只認 j<=i-w 的已確認擺動點 (右側確認窗已閉合)。
+M_CONFIG = {
+    "lookback":     120,   # 擺動點掃描窗
+    "swing_w":      5,     # 擺動點左右確認根數 (j 須為 [j-w,j+w] 極值)
+    "vol_confirm":  1.0,   # 突破日量 > vol_ma50 × 此值 (量能確認趨勢)
+    "max_ext":      0.06,  # 突破不超過擺動高點 6% (抓延續起點, 不追高)
+    "stop_min":     0.04,
+    "stop_max":     0.12,
+    "trail_atr":    3.5,   # ATR 移動停損 (趨勢延續至反轉)
+    "max_hold":     150,
+    "min_price":    10.0,
+    "min_turnover": 50_000_000,
+}
+
+
+def _dow_swings(df, i, lookback, w):
+    """近期「已確認」擺動高/低點 (由舊到新)。只認 j<=i-w 的點 → 不看未來。"""
+    s = max(0, i - lookback)
+    hi = df["high"].values
+    lo = df["low"].values
+    highs, lows = [], []
+    for j in range(s + w, i - w + 1):
+        if hi[j] == hi[j - w:j + w + 1].max():
+            highs.append((j, float(hi[j])))
+        if lo[j] == lo[j - w:j + w + 1].min():
+            lows.append((j, float(lo[j])))
+    return highs, lows
+
+
+def signal_m(df, i, rs_rank=None):
+    """道氏理論主趨勢延續 (策略 M) — HH/HL 結構 + 擺動高點突破 + 量能確認.
+
+    進場: 多頭背景 (close>ma200, ma50>ma200, ma200 上升) + 最近『三個』擺動高點
+    連續遞升 (HH) 且最近三個擺動低點連續遞升 (HL, 道氏「一系列」更高高/更高低) +
+    今日收盤『當日新破』最近擺動高點 + 突破量 > 50 日均量。停損: 跌破最近更高低點
+    (結構受損), 4~12% 內。出場: ATR 移動停損讓主趨勢奔跑, 最長 150 日
+    (非 minervini, 不賣半 — 道氏騎主趨勢)。
+    """
+    cfg = M_CONFIG
+    if i < 200:
+        return None
+    row = df.iloc[i]
+    if row["close"] < cfg["min_price"]:
+        return None
+    if row["volume"] * row["close"] < cfg["min_turnover"]:
+        return None
+    if np.isnan(row["ma200"]) or np.isnan(row["vol_ma50"]) or row["vol_ma50"] <= 0:
+        return None
+    if np.isnan(row["atr14"]) or row["atr14"] <= 0:
+        return None
+    if not (row["close"] > row["ma200"] and row["ma50"] > row["ma200"]
+            and row["ma200"] > df["ma200"].iloc[i - 21]):
+        return None
+    highs, lows = _dow_swings(df, i, cfg["lookback"], cfg["swing_w"])
+    if len(highs) < 3 or len(lows) < 3:
+        return None
+    # 道氏「主趨勢 = 一系列更高的高點 + 更高的低點」: 取最近三個已確認擺動點,
+    # 要求高點與低點皆連續遞升 (非單一 HH/HL 對, 而是持續的多腳結構)。
+    if not (highs[-1][1] > highs[-2][1] > highs[-3][1]
+            and lows[-1][1] > lows[-2][1] > lows[-3][1]):
+        return None
+    last_high, last_low = highs[-1][1], lows[-1][1]
+    prev_close = df["close"].iloc[i - 1]
+    if not (row["close"] > last_high and prev_close <= last_high):
+        return None
+    if (row["close"] - last_high) / last_high > cfg["max_ext"]:
+        return None
+    if row["volume"] <= cfg["vol_confirm"] * row["vol_ma50"]:
+        return None
+    stop_pct = (row["close"] - last_low) / row["close"]
+    stop_pct = min(max(stop_pct, cfg["stop_min"]), cfg["stop_max"])
+    return {
+        "score":     rs_rank if rs_rank is not None else 0.5,
+        "stop_pct":  stop_pct,
+        "trail_atr": cfg["trail_atr"],
+        "gain_cap":  9.99,
+        "max_hold":  cfg["max_hold"],
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# 策略 N — 傑西·李佛摩「最小阻力線」(Livermore line of least resistance)
+# ─────────────────────────────────────────────────────────────
+# 《股票作手回憶錄》核心:
+#   * 關鍵樞紐點 (pivotal point): 反覆測試的前高/供給帶。被『決定性』突破 = 阻力
+#     被清除, 股價沿「最小阻力線」前進。
+#   * 不預測、等確認: 樞紐被突破才動手 (不買勉強掠過的假突破)。
+#   * 順勢加碼 (pyramiding): 沿最小阻力線前進時分批加碼, 同步上移停損 (引擎:
+#     初始 1/4 倉, +2%/+4% 補上, 滿倉後最大虧損 < 初始單批風險)。
+#   * 迅速停損 (~8%) 但對贏家「坐穩不動」(sit tight) — 靠少數大波段獲利。
+# 與 G (Darvas 盒) 區別: N 的樞紐須多次觸及同一前高 (供給帶, base 較長 60 日),
+#   採加碼 + 寬 ATR 移動停損坐穩主升段; Darvas 是 20 日短盒 + 盒底停損 + 無加碼。
+N_CONFIG = {
+    "base":         60,    # 整理區 (樞紐點) 回顧窗
+    "tol":          0.03,  # 觸及樞紐帶容差
+    "min_touches":  3,     # 樞紐點最少觸及次數 (真供給帶)
+    "buffer":       0.005, # 決定性突破: close > pivot×(1+buffer)
+    "vol_mult":     1.3,   # 突破量 > vol_ma50 × 此值
+    "max_ext":      0.08,  # 不追高: 距樞紐 <= 8%
+    "rs_min":       0.80,  # 只做領導股
+    "stop_pct":     0.08,  # 迅速停損
+    "trail_atr":    4.0,   # 寬 ATR 移動停損 (sit tight)
+    "max_hold":     150,
+    "min_price":    10.0,
+    "min_turnover": 50_000_000,
+}
+
+
+def _liv_pivotal(df, i, cfg):
+    """關鍵樞紐點 = [i-base, i) 整理區反覆觸及的水平壓力高點。回傳 pivot 或 None.
+
+    只用今日之前的歷史 (不含今日突破), 杜絕前視。
+    """
+    s = max(0, i - cfg["base"])
+    hi = df["high"].values[s:i]
+    lo = df["low"].values[s:i]
+    if len(hi) < 20:
+        return None
+    pivot = float(hi.max())
+    if pivot <= 0:
+        return None
+    if int((hi >= pivot * (1 - cfg["tol"])).sum()) < cfg["min_touches"]:
+        return None
+    base_low = float(lo.min())
+    depth = (pivot - base_low) / pivot
+    if depth < 0.05 or depth > 0.30:   # 須為真整理 (非崩跌, 非全無波動)
+        return None
+    return pivot
+
+
+def signal_n(df, i, rs_rank=None):
+    """李佛摩最小阻力線突破 (策略 N) — 樞紐突破 + 順勢加碼 + 坐穩.
+
+    進場: 領導股 (RS>=0.80) + 明確多頭排列 + 今日收盤『決定性、當日新破』關鍵樞紐
+    (近 60 日反覆觸及 >=3 次的前高) + 突破量 > 1.3× 均量 + 不追高 (距樞紐<=8%)。
+    部位: pyramid 順勢加碼。停損 8% 迅速止損, 寬 ATR (4×) 移動停損坐穩主升段。
+    """
+    cfg = N_CONFIG
+    if i < 200:
+        return None
+    if rs_rank is None or np.isnan(rs_rank) or rs_rank < cfg["rs_min"]:
+        return None
+    row = df.iloc[i]
+    if row["close"] < cfg["min_price"]:
+        return None
+    if row["volume"] * row["close"] < cfg["min_turnover"]:
+        return None
+    if np.isnan(row["ma200"]) or np.isnan(row["vol_ma50"]) or row["vol_ma50"] <= 0:
+        return None
+    if not (row["close"] > row["ma50"] > row["ma150"] > row["ma200"]
+            and row["ma200"] > df["ma200"].iloc[i - 21]):
+        return None
+    piv = _liv_pivotal(df, i, cfg)
+    if piv is None:
+        return None
+    prev_close = df["close"].iloc[i - 1]
+    if not (row["close"] > piv * (1 + cfg["buffer"]) and prev_close <= piv):
+        return None
+    if (row["close"] - piv) / piv > cfg["max_ext"]:
+        return None
+    if row["volume"] <= cfg["vol_mult"] * row["vol_ma50"]:
+        return None
+    return {
+        "score":     rs_rank,
+        "stop_pct":  cfg["stop_pct"],
+        "pyramid":   True,
+        "trail_atr": cfg["trail_atr"],
+        "gain_cap":  9.99,
+        "max_hold":  cfg["max_hold"],
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# 策略 O — 歐尼爾 CAN SLIM (William O'Neil《笑傲股市》, 完整版含基本面)
+# ─────────────────────────────────────────────────────────────
+# CAN SLIM 七要素, 本策略可量化者:
+#   C 當季 EPS 年增 >= 25%      ─┐ 基本面 (由 fundamentals.py 以 point-in-time 提供;
+#   A 年度 (TTM) EPS 成長 >= 25% ─┤ 於回測/掃描端用 FundamentalDB.canslim 疊加, 杜絕
+#   + ROE >= 17% (報酬品質輔助篩) ─┘ 前視)。註: O'Neil 的『A』本義是『年度盈餘成長』
+#     (本檔以 近四季TTM EPS vs 去年TTM EPS 近似), ROE 17% 是其報酬品質輔助條件, 非 A 本身。
+#   N 創新高 / 突破整理 base: 收盤接近 52 週高 + 突破近 25 日 base 高 (買點 pivot)
+#   S 量能 (供需): 突破量 >= 1.5× 50 日均量
+#   L 領導股: RS 排名 >= 0.80
+#   I 法人認養: 價量/財報資料不足, 略過 (誠實註記)
+#   M 大盤方向: 由引擎市況濾網統一處理 (與其他策略一致)
+# signal_o 只負責技術面 (N/S/L + Stage2); 基本面 C/A/ROE 因 signal 函式無 DB/code 存取,
+# 改由 philo_backtest 以 FundamentalDB.canslim 疊加成「完整 CAN SLIM」(O+F), 並另出純
+# 技術版 (O) 對照, 量化基本面 C/A/ROE 的實際貢獻。
+# 【刻意的設計取捨 — 與 B/K/L 的關係】O 的『技術面』本質上與 B/K/L 同源 (同 Stage2
+# 模板 + 近 52 週高 + 量能突破近端 base + 不追高 + minervini 出場), 差別僅在 base 窗
+# (25 vs 20)、當日新破守則, 以及『不』套 K/L 的 ATR 收縮/量縮門檻。因此純技術版 O 與
+# B/K/L 高度重疊是預期的 — O 的獨特價值來自 CAN SLIM 的基本面選股 (C/A/ROE) 疊加,
+# 故結果應以 O+F (含基本面) 為主, O (純技術) 僅作為量化基本面貢獻的對照基準。
+O_CONFIG = {
+    "base_high":    25,    # base 突破回顧 (O'Neil pivot buy point)
+    "prox_52wh":    0.90,  # 收盤 >= 52 週高 × 此值 (創新高區)
+    "vol_mult":     1.5,   # S: 突破量 >= 1.5× 均量
+    "rs_min":       0.80,  # L: 領導股 (RS rating 80+)
+    "max_ext":      0.05,  # 不追高: 距 pivot <= 5% (O'Neil 5% 買區)
+    "stop_pct":     0.08,  # 7-8% 停損 (O'Neil 鐵律)
+    "max_hold":     9999,  # minervini 模式: MA50 移動停損 / +20% 賣半
+    "min_price":    10.0,
+    "min_turnover": 50_000_000,
+    # 基本面門檻 (供 philo_backtest 以 FundamentalDB.canslim 疊加; 不在 signal 內套)
+    "eps_yoy_min":  0.25,   # C: 當季 EPS 年增
+    "ann_growth_min": 0.25, # A: 年度 (TTM) EPS 成長
+    "roe_min":      0.17,   # ROE 品質輔助篩
+}
+
+
+def signal_o(df, i, rs_rank=None):
+    """歐尼爾 CAN SLIM 技術面 base (策略 O) — N/S/L + Stage2; 基本面 C/A 另疊.
+
+    進場 (技術): Stage 2 趨勢模板 (領導股在多頭) + 收盤接近 52 週高 (>=90%) +
+    今日收盤『當日新破』近 25 日 base 高 (買點 pivot) + 不追高 (距 pivot<=5%) +
+    突破量 >= 1.5× 均量。出場: minervini 模式 (MA50 移動停損 / 3R 保本 / +20% 賣半)。
+    完整 CAN SLIM 另需 EPS 年增>=25% 且 ROE>=17% (philo_backtest 以 PIT 疊加)。
+    """
+    cfg = O_CONFIG
+    if i < 210:
+        return None
+    if rs_rank is None or np.isnan(rs_rank) or rs_rank < cfg["rs_min"]:
+        return None
+    row = df.iloc[i]
+    if row["close"] < cfg["min_price"]:
+        return None
+    if row["volume"] * row["close"] < cfg["min_turnover"]:
+        return None
+    if np.isnan(row["ma200"]) or np.isnan(row["high252"]) or np.isnan(row["vol_ma50"]):
+        return None
+    if row["vol_ma50"] <= 0 or row["high252"] <= 0:
+        return None
+    if not (row["close"] > row["ma50"] > row["ma150"] > row["ma200"]
+            and row["ma200"] > df["ma200"].iloc[i - 21]):
+        return None
+    if row["close"] < row["high252"] * cfg["prox_52wh"]:
+        return None
+    pivot = df["high"].iloc[i - cfg["base_high"]:i].max()
+    prev_close = df["close"].iloc[i - 1]
+    if not (row["close"] > pivot and prev_close <= pivot):
+        return None
+    if (row["close"] - pivot) / pivot > cfg["max_ext"]:
+        return None
+    if row["volume"] < cfg["vol_mult"] * row["vol_ma50"]:
+        return None
+    return {
+        "score":           rs_rank,
+        "minervini":       True,
+        "stop_pct":        cfg["stop_pct"],
+        "use_three_week":  False,
+        "three_week_gain": 0.20,
+        "gain_cap":        9.99,
+        "max_hold":        cfg["max_hold"],
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# 策略 P — 經典均線交叉趨勢跟隨 (Golden Cross: MA50 上穿 MA200)
+# ─────────────────────────────────────────────────────────────
+P_CONFIG = {
+    "fast":         50,
+    "slow":         200,
+    "confirm_days": 3,     # 黃金交叉後 N 日內進場 (避免交叉後才追)
+    "rs_min":       0.70,
+    "vol_mult":     1.0,   # 進場日量能 >= 均量
+    "stop_pct":     0.10,
+    "trail_atr":    4.0,
+    "max_hold":     200,
+    "min_price":    10.0,
+    "min_turnover": 50_000_000,
+}
+
+
+def signal_p(df, i, rs_rank=None):
+    """經典均線交叉趨勢跟隨 (策略 P) — MA50 上穿 MA200 (黃金交叉).
+
+    進場: 近 confirm_days 日內發生 MA(fast) 由下往上穿越 MA(slow) (Golden Cross)，
+    且收盤價站上兩條均線、量能不低於均量、RS 領先。出場: 4× ATR 移動停損 +
+    初始 10% 停損 + 最長持有 200 日 (對稱死亡交叉退場由移動停損近似涵蓋)。
+    純粹的均線交叉訊號 (不疊加型態/base 條件), 用於量化「均線交易」本身的績效。
+    """
+    cfg = P_CONFIG
+    if i < cfg["slow"] + cfg["confirm_days"] + 1:
+        return None
+    if rs_rank is None or np.isnan(rs_rank) or rs_rank < cfg["rs_min"]:
+        return None
+    row = df.iloc[i]
+    if row["close"] < cfg["min_price"]:
+        return None
+    if row["volume"] * row["close"] < cfg["min_turnover"]:
+        return None
+    fast_col, slow_col = f"ma{cfg['fast']}", f"ma{cfg['slow']}"
+    fast = df[fast_col].values
+    slow = df[slow_col].values
+    if np.isnan(fast[i]) or np.isnan(slow[i]) or np.isnan(row["vol_ma50"]) or row["vol_ma50"] <= 0:
+        return None
+    if not (row["close"] > fast[i] > slow[i]):
+        return None
+    # 近 confirm_days 日內須發生「由下往上穿越」(已收盤確認, 不看未來)
+    crossed = False
+    for k in range(i - cfg["confirm_days"] + 1, i + 1):
+        if fast[k - 1] <= slow[k - 1] and fast[k] > slow[k]:
+            crossed = True
+            break
+    if not crossed:
+        return None
+    if row["volume"] < cfg["vol_mult"] * row["vol_ma50"]:
+        return None
+    return {
+        "score":     rs_rank,
+        "stop_pct":  cfg["stop_pct"],
+        "trail_atr": cfg["trail_atr"],
+        "gain_cap":  9.99,
+        "max_hold":  cfg["max_hold"],
+    }
+
+
 STRATEGIES = {"A": signal_a, "B": signal_b, "C": signal_c, "D": signal_d, "E": signal_e,
               "F": signal_f, "G": signal_g, "H": signal_h, "I": signal_i,
               "J": signal_j, "K": signal_k, "L": signal_l,
+              "M": signal_m, "N": signal_n, "O": signal_o, "P": signal_p,
               "PA": signal_pa, "PB": signal_pb, "PC": signal_pc}
