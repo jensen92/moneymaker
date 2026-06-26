@@ -24,3 +24,4 @@ optimize_pf_results.csv
 *.log
 web_cache/
 fundamentals/
+gold_state.json

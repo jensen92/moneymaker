@@ -118,19 +118,23 @@ def _web_url():
 
 
 def send_menu(chat_id):
+    # 簡化版主選單: 各功能執行前都會自動更新最新報價, 不需另外手動刷新。
     rows = [
-        [("📋 全市場掃描", "scan")],
-        [("📈 本年度進出清單", "year")],
-        [("📊 圖像化儀表板", "chart")],
-        [("🌽 期貨每日訊號", "futures")],
-        [("🥇 黃金期貨訊號", "gold")],
-        [("📐 台指期日內策略", "txf")],
-        [("🧠 策略設計說明", "info")],
-        [("📥 更新股價資料", "refresh")],
-        [("🔄 同步最新策略", "update")],
+        [("📋 全市場掃描", "scan"), ("📈 本年清單", "year")],
+        [("🌽 穀物期貨", "futures"), ("🥇 黃金期貨", "gold")],
+        [("📐 台指期", "txf"), ("📊 儀表板", "chart")],
+        [("⚙️ 更多", "more")],
+    ]
+    send_keyboard(chat_id, "📊 策略機器人選單 (點選即執行, 報價自動更新):", rows)
+
+
+def send_more_menu(chat_id):
+    rows = [
+        [("🧠 策略說明", "info")],
+        [("📥 更新股價資料", "refresh"), ("🔄 同步最新策略", "update")],
         [("📊 機器人狀態", "status")],
     ]
-    send_keyboard(chat_id, "📊 策略機器人選單 — 點選功能直接執行:", rows)
+    send_keyboard(chat_id, "⚙️ 更多功能:", rows)
 
 
 def chart_text():
@@ -997,6 +1001,24 @@ def txf_watch_loop():
         time.sleep(interval)
 
 
+def gold_watch_loop():
+    """背景持續輪詢黃金即時價格 (1分鐘線), 一旦突破進場或觸發移動停損即推播。
+    24 小時運行 (期貨無台股交易時段限制); 預設開啟, 設 BOT_GOLD_WATCH=0 可關閉。"""
+    if not ALLOWED_CHAT:
+        print("未設定 TELEGRAM_CHAT_ID, 略過黃金背景監控")
+        return
+    import gold_monitor
+    interval = int(os.environ.get("BOT_GOLD_WATCH_INTERVAL", "180"))
+    while True:
+        try:
+            alert, _ = gold_monitor.check_live()
+            if alert:
+                send(ALLOWED_CHAT, alert)
+        except Exception as e:  # noqa: BLE001
+            print("黃金背景監控錯誤:", e)
+        time.sleep(interval)
+
+
 def scheduler_loop():
     """每天 08:00 (本機時間) 自動全市場掃描並推播給授權使用者."""
     if not ALLOWED_CHAT:
@@ -1147,6 +1169,8 @@ def handle_callback(chat_id, data):
         send(chat_id, _status_text())
     elif data == "menu":
         send_menu(chat_id)
+    elif data == "more":
+        send_more_menu(chat_id)
     else:
         send(chat_id, f"未知按鈕: {data}")
 
@@ -1269,6 +1293,9 @@ def main():
     # 台指期日內策略盤中自動推播 (預設關閉; 設 BOT_TXF_WATCH=1 開啟)
     if os.environ.get("BOT_TXF_WATCH", "").strip() == "1":
         threading.Thread(target=txf_watch_loop, daemon=True).start()
+    # 黃金期貨背景即時監控 (預設開啟; 設 BOT_GOLD_WATCH=0 可關閉)
+    if os.environ.get("BOT_GOLD_WATCH", "1").strip() == "1":
+        threading.Thread(target=gold_watch_loop, daemon=True).start()
     try:
         r0 = requests.get(f"{API}/getUpdates", params={"offset": -1}, timeout=10)
         updates0 = r0.json().get("result", [])
