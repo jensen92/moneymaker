@@ -18,6 +18,7 @@
     /backtest [C,D]     組合回測 (慢, 數分鐘)
     /chart              取得圖像化儀表板連結 (權益曲線/月損益/R分布/交易清單)
     /futures [M,D,S]    期貨每日訊號 (穀物期貨)
+    /gold               黃金期貨順勢突破訊號 (小時K, 僅做多)
     /txf                台指期日內策略 (前日高低突破, 小時K) 即時掛單計畫與觸發狀態
     /refresh            手動更新股價歷史資料 (增量下載)
     /update             git pull 雲端最新策略並重啟
@@ -122,6 +123,7 @@ def send_menu(chat_id):
         [("📈 本年度進出清單", "year")],
         [("📊 圖像化儀表板", "chart")],
         [("🌽 期貨每日訊號", "futures")],
+        [("🥇 黃金期貨訊號", "gold")],
         [("📐 台指期日內策略", "txf")],
         [("🧠 策略設計說明", "info")],
         [("📥 更新股價資料", "refresh")],
@@ -1034,6 +1036,7 @@ HELP = (
     "/backtest [C,D]     組合回測 (慢, 數分鐘)\n"
     "/chart              圖像化儀表板連結 (權益曲線/月損益/R分布)\n"
     "/futures [M,D,S]    期貨每日訊號 (穀物期貨)\n"
+    "/gold               黃金期貨順勢突破訊號 (小時K, 僅做多)\n"
     "/txf                台指期日內策略 (前日高低突破, 小時K)\n"
     "/refresh            更新股價歷史資料 (增量下載)\n"
     "/update             git pull 雲端最新策略並重啟\n"
@@ -1081,6 +1084,8 @@ def handle(chat_id, text):
         strats = args[0] if args else "M,D,S"
         threading.Thread(target=futures_job, args=(chat_id, strats),
                          daemon=True).start()
+    elif cmd == "gold":
+        threading.Thread(target=gold_job, args=(chat_id,), daemon=True).start()
     elif cmd == "txf":
         threading.Thread(target=txf_job, args=(chat_id,), daemon=True).start()
     elif cmd == "refresh":
@@ -1121,6 +1126,9 @@ def handle_callback(chat_id, data):
         send_keyboard(chat_id, chart_text(), [[("🔗 開啟儀表板", _web_url())]])
     elif data == "futures":
         threading.Thread(target=futures_job, args=(chat_id,),
+                         daemon=True).start()
+    elif data == "gold":
+        threading.Thread(target=gold_job, args=(chat_id,),
                          daemon=True).start()
     elif data == "txf":
         threading.Thread(target=txf_job, args=(chat_id,), daemon=True).start()
@@ -1175,6 +1183,18 @@ def futures_job(chat_id, strats="M,D,S"):
         run_script(["futures_data.py"])
         out = run_script(["futures_signals.py", "--strategies", strats])
         send(chat_id, f"📈 期貨每日訊號 ({strats})\n\n{out}")
+    finally:
+        _job_lock.release()
+
+
+def gold_job(chat_id):
+    if not _job_lock.acquire(blocking=False):
+        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
+        return
+    try:
+        send(chat_id, "⏳ 更新黃金小時線 + 掃描突破訊號中...")
+        out = run_script(["gold_signals.py"])
+        send(chat_id, f"🥇 黃金期貨順勢突破訊號\n\n{out}")
     finally:
         _job_lock.release()
 
