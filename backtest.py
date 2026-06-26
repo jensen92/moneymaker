@@ -223,7 +223,7 @@ def collect_signals(data, strategy_key):
     sig_fn = STRATEGIES[strategy_key]
     signals = defaultdict(list)
     needs_rs = strategy_key in ("A", "B", "C", "D", "E", "G", "H", "I", "J", "K", "L",
-                                "PA", "PB", "PC")  # F uses no RS rank
+                                "M", "N", "O", "PA", "PB", "PC")  # F uses no RS rank
     rs = compute_rs_rank(data) if needs_rs else None
     min_i = 210 if needs_rs else 120  # A/C/D 需要 MA200
     for code, df in data.items():
