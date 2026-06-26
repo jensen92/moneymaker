@@ -39,16 +39,16 @@ PICKS_PER_DAY = 2    # 每子帳戶每日最多新倉
 # 1.00 = 停用; 上線建議 0.20/0.15 (C/D 波動較小)
 DD_PAUSE  = {"A": 0.20, "B": 0.20, "C": 0.20, "D": 0.20, "E": 0.20, "F": 0.20, "G": 0.20,
              "H": 0.20, "I": 0.20, "J": 0.20, "K": 0.20, "L": 0.20,
-             "M": 0.20, "N": 0.20, "O": 0.20,
+             "M": 0.20, "N": 0.20, "O": 0.20, "P": 0.20,
              "PA": 0.20, "PB": 0.20, "PC": 0.20}
 DD_RESUME = {"A": 0.12, "B": 0.12, "C": 0.12, "D": 0.12, "E": 0.12, "F": 0.12, "G": 0.12,
              "H": 0.12, "I": 0.12, "J": 0.12, "K": 0.12, "L": 0.12,
-             "M": 0.12, "N": 0.12, "O": 0.12,
+             "M": 0.12, "N": 0.12, "O": 0.12, "P": 0.12,
              "PA": 0.12, "PB": 0.12, "PC": 0.12}
 
 # 各策略最大同時持倉 (持有期越長需要越多槽)
 MAX_POS = {"A": 8, "B": 8, "C": 8, "D": 8, "E": 8, "F": 8, "G": 8, "H": 8, "I": 8,
-           "J": 8, "K": 8, "L": 8, "M": 8, "N": 8, "O": 8,
+           "J": 8, "K": 8, "L": 8, "M": 8, "N": 8, "O": 8, "P": 8,
            "PA": 8, "PB": 8, "PC": 8}
 
 # 三週法則參數 (策略 D): 突破後 THREE_WEEK_DAYS 日內漲幅 >= THREE_WEEK_GAIN
@@ -226,7 +226,7 @@ def collect_signals(data, strategy_key):
     sig_fn = STRATEGIES[strategy_key]
     signals = defaultdict(list)
     needs_rs = strategy_key in ("A", "B", "C", "D", "E", "G", "H", "I", "J", "K", "L",
-                                "M", "N", "O", "PA", "PB", "PC")  # F uses no RS rank
+                                "M", "N", "O", "P", "PA", "PB", "PC")  # F uses no RS rank
     rs = compute_rs_rank(data) if needs_rs else None
     min_i = 210 if needs_rs else 120  # A/C/D 需要 MA200
     for code, df in data.items():

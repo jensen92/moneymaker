@@ -1405,8 +1405,69 @@ def signal_o(df, i, rs_rank=None):
     }
 
 
+# ─────────────────────────────────────────────────────────────
+# 策略 P — 經典均線交叉趨勢跟隨 (Golden Cross: MA50 上穿 MA200)
+# ─────────────────────────────────────────────────────────────
+P_CONFIG = {
+    "fast":         50,
+    "slow":         200,
+    "confirm_days": 3,     # 黃金交叉後 N 日內進場 (避免交叉後才追)
+    "rs_min":       0.70,
+    "vol_mult":     1.0,   # 進場日量能 >= 均量
+    "stop_pct":     0.10,
+    "trail_atr":    4.0,
+    "max_hold":     200,
+    "min_price":    10.0,
+    "min_turnover": 50_000_000,
+}
+
+
+def signal_p(df, i, rs_rank=None):
+    """經典均線交叉趨勢跟隨 (策略 P) — MA50 上穿 MA200 (黃金交叉).
+
+    進場: 近 confirm_days 日內發生 MA(fast) 由下往上穿越 MA(slow) (Golden Cross)，
+    且收盤價站上兩條均線、量能不低於均量、RS 領先。出場: 4× ATR 移動停損 +
+    初始 10% 停損 + 最長持有 200 日 (對稱死亡交叉退場由移動停損近似涵蓋)。
+    純粹的均線交叉訊號 (不疊加型態/base 條件), 用於量化「均線交易」本身的績效。
+    """
+    cfg = P_CONFIG
+    if i < cfg["slow"] + cfg["confirm_days"] + 1:
+        return None
+    if rs_rank is None or np.isnan(rs_rank) or rs_rank < cfg["rs_min"]:
+        return None
+    row = df.iloc[i]
+    if row["close"] < cfg["min_price"]:
+        return None
+    if row["volume"] * row["close"] < cfg["min_turnover"]:
+        return None
+    fast_col, slow_col = f"ma{cfg['fast']}", f"ma{cfg['slow']}"
+    fast = df[fast_col].values
+    slow = df[slow_col].values
+    if np.isnan(fast[i]) or np.isnan(slow[i]) or np.isnan(row["vol_ma50"]) or row["vol_ma50"] <= 0:
+        return None
+    if not (row["close"] > fast[i] > slow[i]):
+        return None
+    # 近 confirm_days 日內須發生「由下往上穿越」(已收盤確認, 不看未來)
+    crossed = False
+    for k in range(i - cfg["confirm_days"] + 1, i + 1):
+        if fast[k - 1] <= slow[k - 1] and fast[k] > slow[k]:
+            crossed = True
+            break
+    if not crossed:
+        return None
+    if row["volume"] < cfg["vol_mult"] * row["vol_ma50"]:
+        return None
+    return {
+        "score":     rs_rank,
+        "stop_pct":  cfg["stop_pct"],
+        "trail_atr": cfg["trail_atr"],
+        "gain_cap":  9.99,
+        "max_hold":  cfg["max_hold"],
+    }
+
+
 STRATEGIES = {"A": signal_a, "B": signal_b, "C": signal_c, "D": signal_d, "E": signal_e,
               "F": signal_f, "G": signal_g, "H": signal_h, "I": signal_i,
               "J": signal_j, "K": signal_k, "L": signal_l,
-              "M": signal_m, "N": signal_n, "O": signal_o,
+              "M": signal_m, "N": signal_n, "O": signal_o, "P": signal_p,
               "PA": signal_pa, "PB": signal_pb, "PC": signal_pc}
