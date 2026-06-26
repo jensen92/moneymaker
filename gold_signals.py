@@ -20,8 +20,16 @@ import gold_strategies as gs
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
 
 
+TW_OFFSET = 8 * 3600   # 台北時間 = UTC+8 (與 txf_data/download_all/telegram_bot 一致)
+
+
 def fetch_gc_hourly(path=gs.CSV):
-    """抓 Yahoo GC=F 近 730 日小時線, 覆寫 path。失敗則回傳 False。"""
+    """抓 Yahoo GC=F 近 730 日小時線, 覆寫 path。失敗則回傳 False。
+
+    時間戳一律轉台北時間 (UTC+8) 並『只寫入整點 (:00) 已完成棒』—
+    濾掉 Yahoo 尾端附帶的即時快照半成品棒與假日/夏令時的非整點棒,
+    避免污染回測/突破視窗 (見 gold_strategies.load_bars 說明)。
+    """
     import requests
     url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
     for attempt in range(3):
@@ -37,9 +45,11 @@ def fetch_gc_hourly(path=gs.CSV):
                 v = q["volume"][i]
                 if None in (o, h, l, c):
                     continue
-                rows.append((time.strftime("%Y-%m-%d %H:%M", time.gmtime(t)),
-                             round(o, 2), round(h, 2), round(l, 2), round(c, 2),
-                             int(v) if v else 0))
+                stamp = time.strftime("%Y-%m-%d %H:%M", time.gmtime(t + TW_OFFSET))
+                if not stamp.endswith(":00"):      # 跳過即時快照 / 非整點棒
+                    continue
+                rows.append((stamp, round(o, 2), round(h, 2), round(l, 2),
+                             round(c, 2), int(v) if v else 0))
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", newline="") as f:
                 w = csv.writer(f)
@@ -50,6 +60,24 @@ def fetch_gc_hourly(path=gs.CSV):
             if attempt == 2:
                 return False
             time.sleep(2 ** attempt)
+
+
+def fetch_live_price():
+    """即時參考價: Yahoo 1 分鐘線最後一筆有效收盤 (近乎即時)。失敗回傳 None。"""
+    import requests
+    try:
+        r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/GC=F",
+                         params={"range": "1d", "interval": "1m"},
+                         headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        res = r.json()["chart"]["result"][0]
+        closes = res["indicators"]["quote"][0]["close"]
+        for v in reversed(closes):
+            if v is not None:
+                return float(v)
+    except Exception:
+        return None
+    return None
 
 
 def main():
@@ -64,37 +92,44 @@ def main():
             return
 
     cfg = gs.CONFIG
-    dt, o, h, l, c = gs.load_bars()
+    dt, o, h, l, c = gs.load_bars()           # 只含已完成整點棒
     a = gs.atr(h, l, c, cfg["atr_n"])
-    i = len(c) - 1
+    i = len(c) - 1                            # 最後一根『已完成』棒
     bo = cfg["breakout"]
-    price = c[i]
-    hh = h[i - bo:i].max()   # 過去 N 小時高點 (不含當根)
-    ll = l[i - bo:i].min()
+    bar_close = c[i]
     atr_now = a[i]
+    live = fetch_live_price() or bar_close    # 即時價 (抓不到則退回收盤)
+    next_level = gs.breakout_level(h, i, bo)  # 形成中下一根要突破的多單參考價 (含本根)
 
-    print(f"黃金 GC 順勢突破訊號  (資料截至 {dt[i]} UTC)")
+    print(f"黃金 GC 順勢突破訊號  (最後完成棒 {dt[i]} 台北時間)")
     print(f"參數: 突破窗 {bo} 小時, 移動停損 {cfg['atr_stop']}×ATR{cfg['atr_n']}, "
           f"{'多空雙向' if cfg['allow_short'] else '僅做多'}\n")
-    print(f"最新收盤 {price:,.2f}  |  過去{bo}H高 {hh:,.2f}  低 {ll:,.2f}  "
-          f"|  ATR {atr_now:,.2f}")
+    print(f"即時價 {live:,.2f}  |  最後完成棒收盤 {bar_close:,.2f}  "
+          f"|  突破參考價(過去{bo}H高) {next_level:,.2f}  |  ATR {atr_now:,.2f}")
 
     m = gs.metrics(gs.backtest())
 
+    # (1) 回測一致訊號: 最後『已完成』棒是否突破其前 bo 根高點 → 確認進場
     sig = gs.signal_breakout(h, l, c, i, cfg, a)
     if sig == 1:
-        stop = price - cfg["atr_stop"] * atr_now
-        print(f"\n🟢 進場訊號: 做多 (突破過去{bo}H高點)")
-        print(f"   進場價 {price:,.2f}   停損價 {stop:,.2f}  "
-              f"(風險 {price - stop:,.2f} 點 ≈ ${(price - stop) * gs.POINT_VALUE:,.0f}/口)")
+        stop = bar_close - cfg["atr_stop"] * atr_now
+        print(f"\n🟢 確認進場 (做多): 最後完成棒收盤突破過去{bo}H高點")
+        print(f"   進場價 {bar_close:,.2f}   停損價 {stop:,.2f}  "
+              f"(風險 {bar_close - stop:,.2f} 點 ≈ ${(bar_close - stop) * gs.POINT_VALUE:,.0f}/口)")
         print("   停利: 無固定停利, 以 ATR 移動停損追蹤獲利 (價格回落跌破停損即出場)")
     elif sig == -1:
-        stop = price + cfg["atr_stop"] * atr_now
-        print(f"\n🔴 進場訊號: 做空 (跌破過去{bo}H低點)")
-        print(f"   進場價 {price:,.2f}   停損價 {stop:,.2f}")
+        stop = bar_close + cfg["atr_stop"] * atr_now
+        print(f"\n🔴 確認進場 (做空): 最後完成棒收盤跌破過去{bo}H低點")
+        print(f"   進場價 {bar_close:,.2f}   停損價 {stop:,.2f}")
+    elif live > next_level:
+        # (2) 即時價已越過突破參考價, 但本小時尚未收盤 → 待收盤確認
+        stop = live - cfg["atr_stop"] * atr_now
+        print(f"\n🟡 即時突破中 (待本小時收盤確認): 即時價 {live:,.2f} > 突破參考價 {next_level:,.2f}")
+        print(f"   若收在 {next_level:,.2f} 之上即確認做多, 參考停損 {stop:,.2f}")
+        print("   (回測規則以小時收盤確認; 此為即時預警, 供提前準備下單)")
     else:
-        gap = (hh - price) / price
-        print(f"\n⚪ 無新進場訊號。距突破做多還差 {hh - price:,.2f} 點 ({gap:+.2%})。")
+        gap = (next_level - live) / live
+        print(f"\n⚪ 無新進場訊號。即時價距突破做多還差 {next_level - live:,.2f} 點 ({gap:+.2%})。")
         print("   (持有中部位請依 ATR 移動停損規則管理出場)")
 
     print(f"\n策略歷史績效 ({m['n']}筆, 2024-2026): 勝率 {m['win']:.1%}  PF {m['pf']:.2f}  "

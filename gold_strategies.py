@@ -5,7 +5,7 @@
 (毛利近 0, 反手機制空轉吃光成本, 對抗黃金多年上行趨勢):
 
   V1 區間逆勢+停損反手          總損益 -$787,020   PF 0.83   MAR -0.98
-  V3 順勢突破(只做多) 24/3ATR    總損益 +$180,330   PF 1.83   MAR  6.07  ← 採用
+  V3 順勢突破(只做多) 24/3ATR    總損益 +$186,480   PF 1.88   MAR  6.28  ← 採用
 
 故改採方向相反的「順勢突破」: 收盤突破最近 N 小時高點進場做多, ATR 倍數
 移動停損出場 (對稱跌破做空在黃金上經驗證為負期望, 預設關閉)。
@@ -13,7 +13,8 @@
 PF 全部 1.57~2.82) 與逐年 (2024/2025/2026 全正, 含黃金回落的 2026 年)
 驗證非單一過擬合尖峰, 見 gold_optimize.py。
 
-資料: futures_data/GC_60m.csv (Yahoo 連續近月合約 1 小時線)。
+資料: futures_data/GC_60m.csv (Yahoo 連續近月合約 1 小時線, 台北時間,
+只含已完成整點棒 — load_bars 已濾掉即時快照半成品棒與非整點棒)。
 """
 import csv
 import os
@@ -35,14 +36,36 @@ CONFIG = {
 }
 
 
-def load_bars(path=CSV):
+def load_bars(path=CSV, completed_only=True):
+    """讀取小時 K 線。
+
+    completed_only=True (預設): 只保留「已完成」的整點 (:00) K 棒, 濾掉
+      (a) Yahoo 每次抓取附在尾端的『即時快照』半成品棒 (時間戳非整點如 09:56,
+          OHLC 退化為單一即時價), 與 (b) 假日/夏令時造成的 :30 等非整點棒。
+    這是回測與訊號判斷的正確母體 — 半成品棒會污染突破高點視窗、ATR 與
+    最近一根的進出場判定 (詳見 gold_signals/gold_monitor 的修正)。
+    """
     o, h, l, c, dt = [], [], [], [], []
     with open(path) as f:
         for row in csv.DictReader(f):
-            dt.append(row["date"])
+            ts = row["date"]
+            if completed_only and not ts.endswith(":00"):
+                continue
+            dt.append(ts)
             o.append(float(row["open"])); h.append(float(row["high"]))
             l.append(float(row["low"]));  c.append(float(row["close"]))
     return dt, np.array(o), np.array(h), np.array(l), np.array(c)
+
+
+def breakout_level(h, i, bo):
+    """『正在形成中的下一根』要突破的多單參考價 = 最近 bo 根『已完成』棒的最高價
+    (i 為最後一根已完成棒的索引, 含 i)。供即時監控比對即時價之用。
+
+    注意: 與 signal_breakout 的歷史判定不同 — 後者判斷『已完成棒 i 本身』是否
+    突破其『之前』bo 根的高點, 故視窗為 h[i-bo:i] (不含 i)。即時監控判斷的是
+    『下一根 (形成中)』, 故參考價需含最近這根已完成棒, 視窗為 h[i-bo+1:i+1]。
+    """
+    return float(h[i - bo + 1:i + 1].max())
 
 
 def atr(h, l, c, n=14):
