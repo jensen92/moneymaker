@@ -1,12 +1,17 @@
 """黃金期貨 (GC=F) 順勢突破策略 — 背景即時監控 (供 telegram_bot.py 輪詢呼叫).
 
 每次呼叫 check_live():
-  1. 抓「即時」價格 (Yahoo 1 分鐘線最後一筆), 不必等小時收盤。
-  2. 若小時資料已過期 (> STALE_MIN 分鐘) 才重抓 GC_60m.csv (省流量)。
-  3. 用「已收盤」小時資料算出目前突破價 (過去 breakout 小時高點) 與
-     (持倉中時) ATR 移動停損價。
-  4. 與即時價比較, 狀態轉換 (無倉→進場 / 持倉→停損出場) 才回傳通知,
-     並把倉位狀態存進 gold_state.json (跨輪詢/重啟不重複通知)。
+  1. 抓「即時」價 (Yahoo 1 分鐘線最後一筆), 不必等小時收盤。
+  2. 若小時資料過期 (> STALE_MIN 分鐘) 才重抓 GC_60m.csv (省流量); 資料只含
+     『已完成整點棒』(load_bars 已濾掉即時快照與非整點棒)。
+  3. 進場分兩種通知:
+       🟡 即時突破預警 — 即時價越過『過去 bo 根已完成棒最高價』(形成中下一根的
+          突破參考價), 但本小時尚未收盤 → 預警, 供提前準備下單 (每個突破價只報一次)。
+       🟢 確認進場 — 出現『新的已完成整點棒』且其收盤符合回測突破條件 → 建立部位
+          (與回測一致: 進場價 = 該棒收盤, 停損 = 收盤 - atr_stop×ATR)。
+  4. 出場: 部位的 ATR 移動停損在每根新完成棒以收盤更新, 並以即時價即時觸發 (較敏感、
+     偏保守), 跌破即出場。
+  5. 倉位/去重狀態存 gold_state.json, 跨輪詢/重啟不重複通知。
 
 回傳: (alert_text or None, state)
 """
@@ -17,7 +22,7 @@ import time
 import numpy as np
 
 import gold_strategies as gs
-from gold_signals import fetch_gc_hourly
+from gold_signals import fetch_gc_hourly, fetch_live_price
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_PATH = os.path.join(HERE, "gold_state.json")
@@ -25,36 +30,26 @@ STALE_MIN = 30   # 小時資料超過此分鐘數才重抓 (節省 Yahoo 請求)
 
 _last_hourly_fetch = 0.0
 
+_PERF = "策略回測: 勝率48.3% PF1.88 最大DD$29,700 MAR6.28 (147筆/2024-2026)"
+
 
 def _load_state():
     if os.path.exists(STATE_PATH):
         try:
             with open(STATE_PATH) as f:
-                return json.load(f)
+                s = json.load(f)
+                s.setdefault("last_bar", None)
+                s.setdefault("alerted_level", None)
+                return s
         except Exception:
             pass
-    return {"pos": 0, "entry": None, "trail": None}
+    return {"pos": 0, "entry": None, "trail": None,
+            "last_bar": None, "alerted_level": None}
 
 
 def _save_state(state):
     with open(STATE_PATH, "w") as f:
         json.dump(state, f)
-
-
-def fetch_live_price():
-    """即時參考價: Yahoo 1 分鐘線最後一筆收盤 (近乎即時, 比小時線快)。"""
-    import requests
-    r = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/GC=F",
-                     params={"range": "1d", "interval": "1m"},
-                     headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"},
-                     timeout=15)
-    r.raise_for_status()
-    res = r.json()["chart"]["result"][0]
-    closes = res["indicators"]["quote"][0]["close"]
-    for v in reversed(closes):
-        if v is not None:
-            return float(v)
-    raise ValueError("無有效即時價")
 
 
 def check_live():
@@ -64,64 +59,92 @@ def check_live():
         if fetch_gc_hourly():
             _last_hourly_fetch = time.time()
 
-    dt, o, h, l, c = gs.load_bars()
+    dt, o, h, l, c = gs.load_bars()           # 只含已完成整點棒
     i = len(c) - 1
     a = gs.atr(h, l, c, cfg["atr_n"])
-    if np.isnan(a[i]):
+    if i < cfg["breakout"] + cfg["atr_n"] + 1 or np.isnan(a[i]):
         return None, _load_state()
     bo = cfg["breakout"]
-    hh = h[i - bo:i].max()
-    ll = l[i - bo:i].min()
+    bar_ts = dt[i]
+    bar_close = c[i]
     atr_now = a[i]
+    up_level = gs.breakout_level(h, i, bo)                 # 形成中下一根多單突破參考價
+    dn_level = float(l[i - bo + 1:i + 1].min())            # 空單參考價 (含本根)
 
     price = fetch_live_price()
+    if price is None:
+        return None, _load_state()
     state = _load_state()
     alert = None
 
+    # 首次啟動: 對齊到目前最後完成棒, 不補發歷史訊號
+    if state["last_bar"] is None and state["pos"] == 0:
+        state["last_bar"] = bar_ts
+        _save_state(state)
+        return None, state
+
+    new_bar = bar_ts != state["last_bar"]
+
     if state["pos"] == 0:
-        if price > hh:
+        sig = gs.signal_breakout(h, l, c, i, cfg, a) if new_bar else None
+        if sig == 1:
+            stop = bar_close - cfg["atr_stop"] * atr_now
+            state = {"pos": 1, "entry": bar_close, "trail": stop,
+                     "last_bar": bar_ts, "alerted_level": None}
+            alert = (
+                f"🟢 黃金確認進場 (做多) — {bar_ts} 台北時間收盤突破過去{bo}H高\n"
+                f"進場價 {bar_close:,.2f}  初始停損 {stop:,.2f}  "
+                f"(風險 {bar_close - stop:,.2f} 點 ≈ ${(bar_close - stop) * gs.POINT_VALUE:,.0f}/口)\n"
+                f"出場: 無固定停利, 隨 ATR 移動停損追蹤, 跌破即出場\n{_PERF}"
+            )
+        elif cfg["allow_short"] and sig == -1:
+            stop = bar_close + cfg["atr_stop"] * atr_now
+            state = {"pos": -1, "entry": bar_close, "trail": stop,
+                     "last_bar": bar_ts, "alerted_level": None}
+            alert = (
+                f"🔴 黃金確認進場 (做空) — {bar_ts} 台北時間收盤跌破過去{bo}H低\n"
+                f"進場價 {bar_close:,.2f}  初始停損 {stop:,.2f}\n{_PERF}"
+            )
+        elif price > up_level and state["alerted_level"] != round(up_level, 1):
+            # 即時突破預警 (本小時尚未收盤, 待收盤確認), 每個突破價只報一次
             stop = price - cfg["atr_stop"] * atr_now
-            state = {"pos": 1, "entry": price, "trail": stop}
+            state["alerted_level"] = round(up_level, 1)
+            state["last_bar"] = bar_ts
             alert = (
-                f"🟢 黃金突破進場訊號 (做多)\n"
-                f"進場參考價 {price:,.2f}  (突破過去{bo}H高點 {hh:,.2f})\n"
-                f"初始停損 {stop:,.2f}  (風險 {price - stop:,.2f} 點 ≈ "
-                f"${(price - stop) * gs.POINT_VALUE:,.0f}/口)\n"
-                f"出場規則: 價格回落跌破移動停損即出場 (無固定停利, 隨ATR追蹤)\n"
-                f"策略回測: 勝率48.3% PF1.83 最大DD$29,700 MAR6.07 (147筆/2024-2026)"
+                f"🟡 黃金即時突破預警 (待本小時收盤確認)\n"
+                f"即時價 {price:,.2f} 已越過突破參考價 {up_level:,.2f} "
+                f"(過去{bo}H高)\n"
+                f"若收在 {up_level:,.2f} 之上即確認做多, 參考停損 {stop:,.2f} — 可提前準備下單\n"
+                f"(回測以小時收盤確認, 此為即時預警)"
             )
-        elif cfg["allow_short"] and price < ll:
-            stop = price + cfg["atr_stop"] * atr_now
-            state = {"pos": -1, "entry": price, "trail": stop}
-            alert = (
-                f"🔴 黃金突破進場訊號 (做空)\n"
-                f"進場參考價 {price:,.2f}  (跌破過去{bo}H低點 {ll:,.2f})\n"
-                f"初始停損 {stop:,.2f}"
-            )
+        else:
+            state["last_bar"] = bar_ts
     elif state["pos"] == 1:
-        new_trail = max(state["trail"], price - cfg["atr_stop"] * atr_now)
-        if price <= new_trail:
+        if new_bar:
+            state["trail"] = max(state["trail"], bar_close - cfg["atr_stop"] * atr_now)
+            state["last_bar"] = bar_ts
+        if price <= state["trail"]:
             pnl = (price - state["entry"]) * gs.POINT_VALUE
             alert = (
-                f"⛔ 黃金多單觸發移動停損, 出場\n"
+                f"⛔ 黃金多單觸發移動停損, 出場 (即時價)\n"
                 f"進場 {state['entry']:,.2f} → 出場 {price:,.2f}  "
                 f"損益 ${pnl:+,.0f}/口 (未計滑價手續費)"
             )
-            state = {"pos": 0, "entry": None, "trail": None}
-        else:
-            state["trail"] = new_trail
+            state = {"pos": 0, "entry": None, "trail": None,
+                     "last_bar": bar_ts, "alerted_level": None}
     elif state["pos"] == -1:
-        new_trail = min(state["trail"], price + cfg["atr_stop"] * atr_now)
-        if price >= new_trail:
+        if new_bar:
+            state["trail"] = min(state["trail"], bar_close + cfg["atr_stop"] * atr_now)
+            state["last_bar"] = bar_ts
+        if price >= state["trail"]:
             pnl = (state["entry"] - price) * gs.POINT_VALUE
             alert = (
-                f"⛔ 黃金空單觸發移動停損, 出場\n"
+                f"⛔ 黃金空單觸發移動停損, 出場 (即時價)\n"
                 f"進場 {state['entry']:,.2f} → 出場 {price:,.2f}  "
                 f"損益 ${pnl:+,.0f}/口 (未計滑價手續費)"
             )
-            state = {"pos": 0, "entry": None, "trail": None}
-        else:
-            state["trail"] = new_trail
+            state = {"pos": 0, "entry": None, "trail": None,
+                     "last_bar": bar_ts, "alerted_level": None}
 
     _save_state(state)
     return alert, state
