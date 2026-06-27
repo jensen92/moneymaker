@@ -142,6 +142,26 @@ def current_z(legA, legB, win=WIN):
             float(a_d[days[-1]]), float(b_d[days[-1]]), days[-1])
 
 
+def summary_lines():
+    """精簡單行摘要 (供 /futures 內嵌); 有訊號者帶兩腿掛單價+出場目標, 待訊號只給 z。"""
+    out = []
+    for a, b, name in PAIRS:
+        cz = current_z(a, b)
+        if cz is None:
+            continue
+        z, sp_now, mean, std, pxA, pxB, d = cz
+        nA, nB = name[:2], name[3:]
+        if z > Z_IN:
+            out.append(f"{name} z={z:+.2f} 🔴做空價差 賣{nA}@{pxA:,.0f}/買{nB}@{pxB:,.0f} →回{mean:,.0f}")
+        elif z < -Z_IN:
+            out.append(f"{name} z={z:+.2f} 🟢做多價差 買{nA}@{pxA:,.0f}/賣{nB}@{pxB:,.0f} →回{mean:,.0f}")
+        else:
+            in_lo = mean - Z_IN * std
+            in_hi = mean + Z_IN * std
+            out.append(f"{name} z={z:+.2f} ⚪待訊號（跌{in_lo:,.0f}買差/升{in_hi:,.0f}賣差）")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-fetch", action="store_true")

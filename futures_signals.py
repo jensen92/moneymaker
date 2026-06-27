@@ -113,9 +113,18 @@ def main():
             if plan:
                 print(f"{key}·{FUTURES[market]['name']}：{plan}")
     print("(持倉依各策略移動停損/通道出場規則管理)")
-    print("\n💡 短線交易首選 → /spread 穀物價差(市場中性, 勝率72-81%, DD9-10%)")
-    print("   穀物單邊趨勢(D/M)DD高(30-40%)且短線無穩定edge, 已不列預設;")
-    print("   如需趨勢清單可 /futures D,M,T,B (高DD自行斟酌)")
+
+    # 短線首選: 直接內嵌穀物價差訊號 (市場中性, 勝率72-81% DD9-10%)
+    try:
+        import grain_spread as gx
+        lines = gx.summary_lines()
+        if lines:
+            print("\n⚖️ 穀物價差短線（市場中性, 詳見 /spread）")
+            for ln in lines:
+                print(ln)
+    except Exception:
+        pass
+    print("\n(單邊趨勢 D/M DD高30-40%且短線無穩定edge, 已不列預設; 需要可 /futures D,M)")
 
 
 if __name__ == "__main__":
