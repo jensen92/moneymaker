@@ -88,6 +88,32 @@ def breakout_level(h, i, bo):
     return float(h[i - bo + 1:i + 1].max())
 
 
+def prev_day_high_low(dt, h, l, i=None):
+    """今日固定參考錨點 = 前一交易日(台北日)的最高/最低價, 全天不變。
+
+    供盯盤用的『今天要留意的固定價』(現行滾動突破門檻每根棒會變, 無固定值);
+    僅作顯示參考, 不影響滾動突破訊號邏輯。回測比較顯示『前1日高突破』
+    風險報酬略遜滾動版 (MAR 6.81 vs 9.40), 故訊號仍用滾動, 此處只給錨點。
+    回傳 (前一日日期, 前一日高, 前一日低) 或 (None, None, None)。
+    """
+    if i is None:
+        i = len(h) - 1
+    cur_day = dt[i][:10]
+    prev_day = None
+    for j in range(i, -1, -1):
+        if dt[j][:10] != cur_day:
+            prev_day = dt[j][:10]
+            break
+    if prev_day is None:
+        return None, None, None
+    hi = lo = None
+    for k in range(len(dt)):
+        if dt[k][:10] == prev_day:
+            hi = h[k] if hi is None else max(hi, h[k])
+            lo = l[k] if lo is None else min(lo, l[k])
+    return prev_day, float(hi), float(lo)
+
+
 def atr(h, l, c, n=14):
     """Wilder ATR (簡化遞迴版, 與 gold_optimize.py 一致)。"""
     tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]),
