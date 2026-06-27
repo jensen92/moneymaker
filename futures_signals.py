@@ -9,10 +9,39 @@
 """
 import argparse
 
+import numpy as np
+
 from futures_backtest import (load_all, RISK_PCT, INIT_CAPITAL, MAX_NOTIONAL,
                               collect_signals, run_strategy, metrics, _build_index)
 from futures_data import FUTURES
-from futures_strategies import STRATEGIES, STRATEGY_NAMES
+from futures_strategies import STRATEGIES, STRATEGY_NAMES, CONFIG
+
+
+def prospective(key, market, df, capital, risk_pct):
+    """該策略/商品『待觸發』的預備進場計劃 (供盯盤/掛單參考)。
+    突破型(T/D)給明確突破價+預估停損+風險金額; 均線(M)/季節(S)無固定價, 給狀態。"""
+    row = df.iloc[-1]
+    close, atr = row["close"], row["atr20"]
+    pv = FUTURES[market]["point_value"]
+    cfg = CONFIG[key]
+    if key in ("T", "D"):
+        lvl = row[f"dc_hi{cfg['entry']}"]
+        if np.isnan(lvl) or np.isnan(atr) or atr <= 0:
+            return None
+        stop = lvl - cfg["stop"] * atr
+        dist = abs(lvl - stop)
+        n = max(1, int(capital * risk_pct / (dist * pv)))
+        return (f"突破 {lvl:,.1f} 做多｜停損 {stop:,.1f}｜{n}口"
+                f"（風險 ${n * dist * pv:,.0f}）｜距 {(lvl - close) / close:+.1%}")
+    if key == "M":
+        fma, sma = row[f"ma{cfg['fast']}"], row[f"ma{cfg['slow']}"]
+        if np.isnan(sma):
+            return None
+        st = "多頭排列(等下次交叉)" if fma > sma else "待黃金交叉做多"
+        return f"MA{cfg['fast']}/{cfg['slow']} {st}（差 {fma / sma - 1:+.1%}）"
+    if key == "S":
+        return f"季節做多: 每年 {cfg['month']}月初進場（現 {row['date'].month}月）"
+    return None
 
 
 def main():
@@ -54,17 +83,34 @@ def main():
             risk_usd = contracts * stop_dist * pv
             hits.append((key, market, s["dir"], ref, stop, contracts, risk_usd))
 
-    if not hits:
-        print("\n⚪ 今日無新進場訊號")
-        print("(持倉依各策略移動停損/通道出場規則管理)")
-        return
+    triggered = {(key, mk) for key, mk, *_ in hits}
 
-    print("\n🟢 今日進場訊號（次一交易日開盤進場）")
-    for key, mk, d, ref, stop, n, risk in hits:
-        side = "做多" if d > 0 else "做空"
-        print(f"{key} {STRATEGY_NAMES[key]}·{FUTURES[mk]['name']} {side}")
-        print(f"  進場 {ref:,.1f}｜停損 {stop:,.1f}｜{n}口（風險 ${risk:,.0f}）")
-    print("停利 無 · 依各策略反向通道/MA交叉/季節到期浮動鎖利")
+    if hits:
+        print("\n🟢 今日進場訊號（次一交易日開盤進場）")
+        for key, mk, d, ref, stop, n, risk in hits:
+            side = "做多" if d > 0 else "做空"
+            print(f"{key} {STRATEGY_NAMES[key]}·{FUTURES[mk]['name']} {side}")
+            print(f"  進場 {ref:,.1f}｜停損 {stop:,.1f}｜{n}口（風險 ${risk:,.0f}）")
+        print("停利 無 · 依各策略反向通道/MA交叉/季節到期浮動鎖利")
+    else:
+        print("\n⚪ 今日無新進場訊號")
+
+    # 預備計劃 — 尚未觸發者的進場價/停損/風險金額 (盯盤掛單參考)
+    # 突破型(D/T)有明確價格, 排前面; 季節(S)各商品相同, 收成一行
+    print("\n📋 預備計劃（待觸發, 進場/停損/風險金額）")
+    for key in sorted(keys, key=lambda k: {"D": 0, "T": 0, "M": 1, "S": 2}.get(k, 3)):
+        if key == "S":
+            cfg = CONFIG["S"]
+            mth = next(iter(data.values())).iloc[-1]["date"].month
+            print(f"S 季節做多：每年 {cfg['month']}月初進場（現 {mth}月）")
+            continue
+        for market, df in data.items():
+            if (key, market) in triggered:
+                continue
+            plan = prospective(key, market, df, args.capital, args.risk)
+            if plan:
+                print(f"{key}·{FUTURES[market]['name']}：{plan}")
+    print("(持倉依各策略移動停損/通道出場規則管理)")
 
 
 if __name__ == "__main__":
