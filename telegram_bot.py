@@ -57,12 +57,31 @@ env_guard.apply(verbose=True)
 
 import requests
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_dotenv():
+    """載入專案根目錄 .env (gitignored) 的 KEY=VALUE; 不覆蓋已存在的環境變數。
+    讓機密 (TELEGRAM_BOT_TOKEN 等) 放 .env 即可, 不需寫進程式或 commit。"""
+    p = os.path.join(HERE, ".env")
+    if not os.path.exists(p):
+        return
+    with open(p) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
+
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 ALLOWED_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 DATA_DIR = os.environ.get("MM_DATA_DIR", "").strip()
 WEB_URL = os.environ.get("MM_WEB_URL", "").strip()
 WEB_PORT = os.environ.get("MM_WEB_PORT", "8800").strip()
-HERE = os.path.dirname(os.path.abspath(__file__))
 API = f"https://api.telegram.org/bot{TOKEN}"
 YF_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
 
@@ -944,7 +963,7 @@ def _status_text():
         lines.append("🥇 黃金背景監控: 關閉 (設 BOT_GOLD_WATCH=1 開啟)")
 
     # 台指盤中監控狀態 (僅 09:00-13:35 運行)
-    txf_on = os.environ.get("BOT_TXF_WATCH", "").strip() == "1"
+    txf_on = os.environ.get("BOT_TXF_WATCH", "1").strip() == "1"
     if txf_on:
         ti = os.environ.get("BOT_TXF_WATCH_INTERVAL", "120")
         import datetime as _dt
@@ -955,6 +974,14 @@ def _status_text():
         lines.append(f"📐 台指盤中監控: 開啟 (每{ti}秒, 09:00-13:35)｜{sess}")
     else:
         lines.append("📐 台指盤中監控: 關閉 (設 BOT_TXF_WATCH=1 開啟)")
+
+    # 穀物價差背景監控狀態
+    grain_on = os.environ.get("BOT_GRAIN_WATCH", "1").strip() == "1"
+    if grain_on:
+        gri = os.environ.get("BOT_GRAIN_WATCH_INTERVAL", "1800")
+        lines.append(f"⚖️ 穀物價差監控: 開啟 (每{int(gri)//60}分)")
+    else:
+        lines.append("⚖️ 穀物價差監控: 關閉 (設 BOT_GRAIN_WATCH=1 開啟)")
 
     return "\n".join(lines)
 
@@ -1050,6 +1077,24 @@ def gold_watch_loop():
                 send(ALLOWED_CHAT, alert)
         except Exception as e:  # noqa: BLE001
             print("黃金背景監控錯誤:", e)
+        time.sleep(interval)
+
+
+def grain_watch_loop():
+    """背景輪詢穀物價差 z-score, 越過 ±1.5 (進場) 或回均值 (出場) 即推播。
+    穀物日線每日收盤後更新, 故輪詢間隔長 (預設每 30 分鐘); 設 BOT_GRAIN_WATCH=0 可關閉。"""
+    if not ALLOWED_CHAT:
+        print("未設定 TELEGRAM_CHAT_ID, 略過穀物價差背景監控")
+        return
+    import grain_monitor
+    interval = int(os.environ.get("BOT_GRAIN_WATCH_INTERVAL", "1800"))
+    while True:
+        try:
+            alert, _ = grain_monitor.check_live()
+            if alert:
+                send(ALLOWED_CHAT, "⚖️ 穀物價差訊號\n\n" + alert)
+        except Exception as e:  # noqa: BLE001
+            print("穀物價差背景監控錯誤:", e)
         time.sleep(interval)
 
 
@@ -1340,12 +1385,15 @@ def main():
     if os.environ.get("BOT_AUTO_UPDATE", "1").strip() == "1" \
             and os.path.isdir(os.path.join(HERE, ".git")):
         threading.Thread(target=auto_update_loop, daemon=True).start()
-    # 台指期日內策略盤中自動推播 (預設關閉; 設 BOT_TXF_WATCH=1 開啟)
-    if os.environ.get("BOT_TXF_WATCH", "").strip() == "1":
+    # 台指期日內策略盤中自動推播 (預設開啟; 設 BOT_TXF_WATCH=0 可關閉)
+    if os.environ.get("BOT_TXF_WATCH", "1").strip() == "1":
         threading.Thread(target=txf_watch_loop, daemon=True).start()
     # 黃金期貨背景即時監控 (預設開啟; 設 BOT_GOLD_WATCH=0 可關閉)
     if os.environ.get("BOT_GOLD_WATCH", "1").strip() == "1":
         threading.Thread(target=gold_watch_loop, daemon=True).start()
+    # 穀物價差背景監控 (預設開啟; 設 BOT_GRAIN_WATCH=0 可關閉)
+    if os.environ.get("BOT_GRAIN_WATCH", "1").strip() == "1":
+        threading.Thread(target=grain_watch_loop, daemon=True).start()
     try:
         r0 = requests.get(f"{API}/getUpdates", params={"offset": -1}, timeout=10)
         updates0 = r0.json().get("result", [])
