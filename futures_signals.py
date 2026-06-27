@@ -100,9 +100,11 @@ def main():
     print("\n📋 預備計劃（待觸發, 進場/停損/風險金額）")
     for key in sorted(keys, key=lambda k: {"D": 0, "T": 0, "M": 1, "S": 2}.get(k, 3)):
         if key == "S":
-            cfg = CONFIG["S"]
+            from futures_strategies import S_SEASON
             mth = next(iter(data.values())).iloc[-1]["date"].month
-            print(f"S 季節做多：每年 {cfg['month']}月初進場（現 {mth}月）")
+            wins = "／".join(f"{FUTURES[mk]['name'][:2]}{S_SEASON[mk]['month']}月"
+                             for mk in data if mk in S_SEASON)
+            print(f"S 季節做多（各穀物專屬窗, 現 {mth}月）：{wins}進場")
             continue
         for market, df in data.items():
             if (key, market) in triggered:

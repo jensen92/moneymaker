@@ -122,7 +122,8 @@ def send_menu(chat_id):
     rows = [
         [("📋 全市場掃描", "scan"), ("📈 本年清單", "year")],
         [("🌽 穀物期貨", "futures"), ("🥇 黃金期貨", "gold")],
-        [("📐 台指期", "txf"), ("📊 儀表板", "chart")],
+        [("⚖️ 穀物價差", "spread"), ("📐 台指期", "txf")],
+        [("📊 儀表板", "chart")],
         [("🧠 策略說明", "info"), ("📊 機器人狀態", "status")],
         [("📥 更新股價資料", "refresh"), ("🔄 同步最新策略", "update")],
     ]
@@ -1092,6 +1093,7 @@ HELP = (
     "/chart              圖像化儀表板連結 (權益曲線/月損益/R分布)\n"
     "/futures [M,D,S]    期貨每日訊號 (穀物期貨)\n"
     "/gold               黃金期貨順勢突破訊號 (小時K, 僅做多)\n"
+    "/spread             穀物價差均值回歸 (相對價值, 市場中性, 低DD)\n"
     "/txf                台指期日內策略 (前日高低突破, 小時K)\n"
     "/refresh            更新股價歷史資料 (增量下載)\n"
     "/update             git pull 雲端最新策略並重啟\n"
@@ -1141,6 +1143,8 @@ def handle(chat_id, text):
                          daemon=True).start()
     elif cmd == "gold":
         threading.Thread(target=gold_job, args=(chat_id,), daemon=True).start()
+    elif cmd in ("spread", "grain"):
+        threading.Thread(target=grain_spread_job, args=(chat_id,), daemon=True).start()
     elif cmd == "txf":
         threading.Thread(target=txf_job, args=(chat_id,), daemon=True).start()
     elif cmd == "refresh":
@@ -1181,6 +1185,9 @@ def handle_callback(chat_id, data):
         send_keyboard(chat_id, chart_text(), [[("🔗 開啟儀表板", _web_url())]])
     elif data == "futures":
         threading.Thread(target=futures_job, args=(chat_id,),
+                         daemon=True).start()
+    elif data == "spread":
+        threading.Thread(target=grain_spread_job, args=(chat_id,),
                          daemon=True).start()
     elif data == "gold":
         threading.Thread(target=gold_job, args=(chat_id,),
@@ -1237,6 +1244,18 @@ def futures_job(chat_id, strats="M,D,S"):
         send(chat_id, "⏳ 更新期貨資料 + 掃描訊號中...")
         run_script(["futures_data.py"])
         out = run_script(["futures_signals.py", "--strategies", strats])
+        send(chat_id, out)
+    finally:
+        _job_lock.release()
+
+
+def grain_spread_job(chat_id):
+    if not _job_lock.acquire(blocking=False):
+        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
+        return
+    try:
+        send(chat_id, "⏳ 更新穀物日線 + 計算價差 z-score 中...")
+        out = run_script(["grain_spread.py"])
         send(chat_id, out)
     finally:
         _job_lock.release()
