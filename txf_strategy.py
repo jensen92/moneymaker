@@ -154,31 +154,31 @@ def live_report():
     pl = min(b["l"] for b in prev_bars)
     plan = make_plan(ph, pl)
     lines = [
-        f"📐 台指期日內策略 (前日高低突破)  {today_d}",
-        f"前一交易日 ({prev_d}) 高 {ph:.0f} / 低 {pl:.0f}",
+        f"📐 台指日內 · 前日高低突破 · {today_d}",
+        f"今日錨點 前日高 {ph:.0f}／前日低 {pl:.0f}（停損固定 {STOP_PT}點, 13:30平倉）",
         "",
-        f"▲ 做多: 突破 {ph:.0f} 進場, 停損 {plan['long']['stop']:.0f}, 13:30 平倉",
-        f"▼ 做空: 跌破 {pl:.0f} 進場, 停損 {plan['short']['stop']:.0f}, 13:30 平倉",
-        f"(停損固定 {STOP_PT} 點; 大台每點 NT${POINT_VALUE:.0f})",
+        f"▲ 做多 突破 {ph:.0f}｜停損 {plan['long']['stop']:.0f}",
+        f"▼ 做空 跌破 {pl:.0f}｜停損 {plan['short']['stop']:.0f}",
         "",
     ]
     trade = evaluate_day(today_bars, ph, pl)
     if trade is None:
         cur = today_bars[-1]["c"] if today_bars else None
-        lines.append(f"今日尚未觸發 (現價 {cur:.0f})" if cur else "今日尚無資料")
+        lines.append(f"⚪ 今日尚未觸發（現價 {cur:.0f}）" if cur else "⚪ 今日尚無資料")
     else:
-        st = {"open": "持倉中", "stopped": "已停損出場", "closed": "已收盤平倉"}[trade["status"]]
+        st = {"open": "持倉中", "stopped": "已停損", "closed": "已平倉"}[trade["status"]]
+        em = {"open": "🟢", "stopped": "⛔", "closed": "✅"}[trade["status"]]
+        out_lbl = "現價" if trade["status"] == "open" else "出場"
         lines.append(
-            f"今日已觸發 {trade['dir']}單: 進場 {trade['entry']:.0f} → "
-            f"{'現價/出場' if trade['status']=='open' else '出場'} {trade['exit']:.0f}  "
-            f"{trade['pnl_pt']:+.0f} 點 (NT${trade['pnl_nt']:+,.0f})  [{st}]")
+            f"{em} 今日已觸發 {trade['dir']}單 [{st}]")
+        lines.append(
+            f"進場 {trade['entry']:.0f} → {out_lbl} {trade['exit']:.0f}｜"
+            f"{trade['pnl_pt']:+.0f}點（NT${trade['pnl_nt']:+,.0f}）")
         equity = float(os.environ.get("TXF_EQUITY", "0") or 0)
         if equity > 0:
             pp = position_plan(equity, trade["side"], trade["entry"])
-            lines.append("")
-            lines.append(f"💰 資金管理 (帳戶權益 NT${equity:,.0f}, 每筆風險 "
-                         f"{pp['risk_pct']*100:.1f}%): 起始 {pp['base_units']} 口, "
-                         f"停損 {pp['base_stop']:.0f}")
+            lines.append(f"💰 權益 NT${equity:,.0f}·風險 {pp['risk_pct']*100:.1f}%："
+                         f"起始 {pp['base_units']}口, 停損 {pp['base_stop']:.0f}")
             for a in pp["adds"]:
                 lines.append(f"   {a['desc']}")
     return "\n".join(lines)

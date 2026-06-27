@@ -1190,7 +1190,7 @@ def txf_job(chat_id):
         import txf_strategy
         importlib.reload(txf_strategy)
         report = txf_strategy.live_report()
-        edit(chat_id, msg_id, "✅ 台指日內策略")
+        edit(chat_id, msg_id, "✅ 完成")
         send(chat_id, report)
     except Exception as e:  # noqa: BLE001
         send(chat_id, f"❌ 台指日內策略失敗: {e}")
@@ -1206,7 +1206,7 @@ def futures_job(chat_id, strats="M,D,S"):
         send(chat_id, "⏳ 更新期貨資料 + 掃描訊號中...")
         run_script(["futures_data.py"])
         out = run_script(["futures_signals.py", "--strategies", strats])
-        send(chat_id, f"📈 期貨每日訊號 ({strats})\n\n{out}")
+        send(chat_id, out)
     finally:
         _job_lock.release()
 
@@ -1218,7 +1218,7 @@ def gold_job(chat_id):
     try:
         send(chat_id, "⏳ 更新黃金小時線 + 掃描突破訊號中...")
         out = run_script(["gold_signals.py"])
-        send(chat_id, f"🥇 黃金期貨順勢突破訊號\n\n{out}")
+        send(chat_id, out)
     finally:
         _job_lock.release()
 

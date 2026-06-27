@@ -25,18 +25,16 @@ def main():
 
     data = load_all()
     last_date = max(df["date"].iloc[-1] for df in data.values())
-    print(f"資料截至 {last_date.date()}  |  本金 {args.capital:,.0f}  "
-          f"風險 {args.risk:.1%}/筆\n")
+    print(f"🌽 穀物期貨訊號 · 本金 {args.capital:,.0f} · 風險 {args.risk:.0%}/筆 · 截至 {last_date.strftime('%m-%d')}\n")
 
     all_dates, date_idx = _build_index(data)
-    print("策略歷史績效 (全期回測):")
+    print("績效(全期)")
     for key in keys:
         emap = collect_signals(data, key)
         trades, curve = run_strategy(data, emap, key, args.capital, all_dates, date_idx)
         m = metrics(trades, curve, args.capital)
-        print(f"  {key} {STRATEGY_NAMES[key]:<11} 交易{m['n']:>4}  勝率{m['win']:>6.1%}  "
-              f"PF{m['pf']:>5.2f}  最大回撤{m['dd']:>6.1%}  MAR{m['mar']:>5.2f}")
-    print()
+        print(f"{key} {STRATEGY_NAMES[key]}｜{m['n']}筆｜PF {m['pf']:.2f}｜"
+              f"勝率 {m['win']:.0%}｜DD {m['dd']:.0%}｜MAR {m['mar']:.2f}")
 
     hits = []
     for key in keys:
@@ -57,18 +55,16 @@ def main():
             hits.append((key, market, s["dir"], ref, stop, contracts, risk_usd))
 
     if not hits:
-        print("今日無新進場訊號 (持有中部位請依各策略移動停損/通道出場規則管理)。")
+        print("\n⚪ 今日無新進場訊號")
+        print("(持倉依各策略移動停損/通道出場規則管理)")
         return
 
-    print(f"{'策略':<14} {'商品':<14} {'方向':<4} {'進場價':>9} "
-          f"{'停損價':>9} {'口數':>4} {'風險$':>9}")
-    print("-" * 70)
-    for key, m, d, ref, stop, n, risk in hits:
+    print("\n🟢 今日進場訊號（次一交易日開盤進場）")
+    for key, mk, d, ref, stop, n, risk in hits:
         side = "做多" if d > 0 else "做空"
-        print(f"{key} {STRATEGY_NAMES[key]:<11} {FUTURES[m]['name']:<12} "
-              f"{side:<4} {ref:>9.2f} {stop:>9.2f} {n:>4} {risk:>9,.0f}")
-    print("\n進場 = 次一交易日開盤; 停損為初始值, 部分策略出場後續以反向通道/MA交叉動態調整。")
-    print("停利: 無固定停利, 依各策略出場規則 (反向通道/MA交叉/季節持有到期) 浮動鎖利。")
+        print(f"{key} {STRATEGY_NAMES[key]}·{FUTURES[mk]['name']} {side}")
+        print(f"  進場 {ref:,.1f}｜停損 {stop:,.1f}｜{n}口（風險 ${risk:,.0f}）")
+    print("停利 無 · 依各策略反向通道/MA交叉/季節到期浮動鎖利")
 
 
 if __name__ == "__main__":
