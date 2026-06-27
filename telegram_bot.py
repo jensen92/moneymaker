@@ -942,6 +942,19 @@ def _status_text():
     else:
         lines.append("🥇 黃金背景監控: 關閉 (設 BOT_GOLD_WATCH=1 開啟)")
 
+    # 台指盤中監控狀態 (僅 09:00-13:35 運行)
+    txf_on = os.environ.get("BOT_TXF_WATCH", "").strip() == "1"
+    if txf_on:
+        ti = os.environ.get("BOT_TXF_WATCH_INTERVAL", "120")
+        import datetime as _dt
+        now = _dt.datetime.now()
+        in_sess = (now.weekday() < 5
+                   and (9, 0) <= (now.hour, now.minute) <= (13, 35))
+        sess = "盤中監控中" if in_sess else "盤外待命"
+        lines.append(f"📐 台指盤中監控: 開啟 (每{ti}秒, 09:00-13:35)｜{sess}")
+    else:
+        lines.append("📐 台指盤中監控: 關閉 (設 BOT_TXF_WATCH=1 開啟)")
+
     return "\n".join(lines)
 
 
