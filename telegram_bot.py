@@ -118,23 +118,15 @@ def _web_url():
 
 
 def send_menu(chat_id):
-    # 簡化版主選單: 各功能執行前都會自動更新最新報價, 不需另外手動刷新。
+    # 單層主選單: 全部功能攤平於第一層, 不用第二層。各功能執行前自動更新最新報價。
     rows = [
         [("📋 全市場掃描", "scan"), ("📈 本年清單", "year")],
         [("🌽 穀物期貨", "futures"), ("🥇 黃金期貨", "gold")],
         [("📐 台指期", "txf"), ("📊 儀表板", "chart")],
-        [("⚙️ 更多", "more")],
+        [("🧠 策略說明", "info"), ("📊 機器人狀態", "status")],
+        [("📥 更新股價資料", "refresh"), ("🔄 同步最新策略", "update")],
     ]
     send_keyboard(chat_id, "📊 策略機器人選單 (點選即執行, 報價自動更新):", rows)
-
-
-def send_more_menu(chat_id):
-    rows = [
-        [("🧠 策略說明", "info")],
-        [("📥 更新股價資料", "refresh"), ("🔄 同步最新策略", "update")],
-        [("📊 機器人狀態", "status")],
-    ]
-    send_keyboard(chat_id, "⚙️ 更多功能:", rows)
 
 
 def chart_text():
@@ -1169,8 +1161,6 @@ def handle_callback(chat_id, data):
         send(chat_id, _status_text())
     elif data == "menu":
         send_menu(chat_id)
-    elif data == "more":
-        send_more_menu(chat_id)
     else:
         send(chat_id, f"未知按鈕: {data}")
 
