@@ -105,7 +105,14 @@ def main():
     print(f"參數: 突破窗 {bo} 小時, 移動停損 {cfg['atr_stop']}×ATR{cfg['atr_n']}, "
           f"{'多空雙向' if cfg['allow_short'] else '僅做多'}\n")
     print(f"即時價 {live:,.2f}  |  最後完成棒收盤 {bar_close:,.2f}  "
-          f"|  突破參考價(過去{bo}H高) {next_level:,.2f}  |  ATR {atr_now:,.2f}")
+          f"|  突破參考價(過去{bo}H高, 每根更新) {next_level:,.2f}  |  ATR {atr_now:,.2f}")
+
+    # 今日固定錨點 (前一交易日高/低, 全天不變) — 供盯盤, 不影響滾動訊號
+    pd, pdh, pdl = gs.prev_day_high_low(dt, h, l, i)
+    if pdh is not None:
+        rel = "上方" if live > pdh else "下方"
+        print(f"今日固定錨點 (前一交易日 {pd}): 高 {pdh:,.2f} / 低 {pdl:,.2f}  "
+              f"→ 即時價在前日高{rel} ({live - pdh:+,.2f})")
 
     trades = gs.backtest()
     m = gs.metrics(trades)
