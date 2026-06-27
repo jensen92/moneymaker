@@ -101,65 +101,48 @@ def main():
     live = fetch_live_price() or bar_close    # 即時價 (抓不到則退回收盤)
     next_level = gs.breakout_level(h, i, bo)  # 形成中下一根要突破的多單參考價 (含本根)
 
-    print(f"黃金 GC 順勢突破訊號  (最後完成棒 {dt[i]} 台北時間)")
-    print(f"參數: 突破窗 {bo} 小時, 移動停損 {cfg['atr_stop']}×ATR{cfg['atr_n']}, "
-          f"{'多空雙向' if cfg['allow_short'] else '僅做多'}\n")
-    print(f"即時價 {live:,.2f}  |  最後完成棒收盤 {bar_close:,.2f}  "
-          f"|  突破參考價(過去{bo}H高, 每根更新) {next_level:,.2f}  |  ATR {atr_now:,.2f}")
-
-    # 今日固定錨點 (前一交易日高/低, 全天不變) — 供盯盤, 不影響滾動訊號
-    pd, pdh, pdl = gs.prev_day_high_low(dt, h, l, i)
-    if pdh is not None:
-        rel = "上方" if live > pdh else "下方"
-        print(f"今日固定錨點 (前一交易日 {pd}): 高 {pdh:,.2f} / 低 {pdl:,.2f}  "
-              f"→ 即時價在前日高{rel} ({live - pdh:+,.2f})")
-
     trades = gs.backtest()
     m = gs.metrics(trades)
-
     stop_mult = cfg["atr_stop"]
 
-    def risk_str(entry, stop):
+    def risk(entry, stop):
         pts = abs(entry - stop)
-        return f"(風險 {pts:,.2f} 點 ≈ ${pts * gs.POINT_VALUE:,.0f}/口)"
+        return f"風險{pts:.0f}點/${pts * gs.POINT_VALUE:,.0f}口"
 
-    # (1) 回測一致訊號: 最後『已完成』棒是否突破其前 bo 根高點 → 確認進場
+    # ── 行情列 ──
+    print(f"{dt[i][5:]} 台北 · 僅做多 {bo}H突破/{stop_mult}ATR\n")
+    print(f"即時 {live:,.1f}｜收盤 {bar_close:,.1f}｜ATR {atr_now:.1f}")
+    print(f"突破門檻 {next_level:,.1f}（距 {next_level - live:+,.1f} / {(next_level - live) / live:+.2%}）")
+    pd, pdh, pdl = gs.prev_day_high_low(dt, h, l, i)
+    if pdh is not None:
+        print(f"今日錨點 前日高 {pdh:,.1f}／前日低 {pdl:,.1f}")
+
+    # ── 訊號區 ──
     sig = gs.signal_breakout(h, l, c, i, cfg, a)
     if sig == 1:
         stop = bar_close - stop_mult * atr_now
-        print(f"\n🟢 確認進場 (做多): 最後完成棒收盤突破過去{bo}H高點")
-        print(f"   進場價: {bar_close:,.2f}")
-        print(f"   停損價: {stop:,.2f}  {risk_str(bar_close, stop)}")
-        print(f"   停利價: 無固定停利 — 停損價隨每根新K棒以 收盤-{stop_mult}×ATR 上移鎖利, 跌破即出場")
+        print(f"\n🟢 確認進場（做多）")
+        print(f"進場 {bar_close:,.1f}｜停損 {stop:,.1f}（{risk(bar_close, stop)}）")
+        print("停利 無 · ATR移動停損鎖利, 跌破即出")
     elif sig == -1:
         stop = bar_close + stop_mult * atr_now
-        print(f"\n🔴 確認進場 (做空): 最後完成棒收盤跌破過去{bo}H低點")
-        print(f"   進場價: {bar_close:,.2f}")
-        print(f"   停損價: {stop:,.2f}  {risk_str(bar_close, stop)}")
-        print(f"   停利價: 無固定停利 — 停損價隨每根新K棒以 收盤+{stop_mult}×ATR 下移鎖利, 突破即出場")
+        print(f"\n🔴 確認進場（做空）")
+        print(f"進場 {bar_close:,.1f}｜停損 {stop:,.1f}（{risk(bar_close, stop)}）")
+        print("停利 無 · ATR移動停損鎖利, 突破即出")
     elif live > next_level:
-        # (2) 即時價已越過突破參考價, 但本小時尚未收盤 → 待收盤確認
         stop = live - stop_mult * atr_now
-        print(f"\n🟡 即時突破中 (待本小時 {bo}H 收盤確認)")
-        print(f"   進場價(預估): {live:,.2f}  (即時價已 > 突破參考價 {next_level:,.2f}, 收盤確認後成立)")
-        print(f"   停損價(預估): {stop:,.2f}  {risk_str(live, stop)}")
-        print(f"   停利價: 無固定停利 — 確認進場後以 ATR 移動停損追蹤")
-        print("   (回測規則以小時收盤確認; 此為即時預警, 供提前準備下單)")
+        print(f"\n🟡 即時突破中（待本小時收盤確認）")
+        print(f"進場(預估) {live:,.1f}｜停損(預估) {stop:,.1f}（{risk(live, stop)}）")
+        print("停利 無 · ATR移動停損；收在門檻上即確認")
     else:
-        # (3) 尚未觸發 — 仍給出『預備下單計劃』的進場/停損/停利價
-        gap = (next_level - live) / live
-        plan_stop = next_level - stop_mult * atr_now
-        print(f"\n⚪ 目前無進場訊號 (即時價距突破做多還差 {next_level - live:,.2f} 點 {gap:+.2%})")
-        print("   預備計劃 (做多, 待突破才成立):")
-        print(f"   進場價: 即時價突破 {next_level:,.2f} (過去{bo}H高) 並站上即進場")
-        print(f"   停損價(預估): {plan_stop:,.2f}  {risk_str(next_level, plan_stop)}")
-        print(f"   停利價: 無固定停利 — 進場後以 收盤-{stop_mult}×ATR 移動停損追蹤鎖利")
-        print("   (持有中部位請依上述 ATR 移動停損規則管理出場)")
+        stop = next_level - stop_mult * atr_now
+        print(f"\n⚪ 無進場訊號")
+        print(f"進場 突破 {next_level:,.1f} 做多｜停損(預估) {stop:,.1f}（{risk(next_level, stop)}）")
+        print("停利 無 · ATR移動停損鎖利")
 
-    print(f"\n策略歷史績效 ({m['n']}筆, 2024-2026): 勝率 {m['win']:.1%}  PF {m['pf']:.2f}  "
-          f"最大回撤 ${m['dd']:,.0f}  MAR {m['mar']:.2f}")
-    print(f"逐年損益: {gs.yearly_line(trades)}")
-    print("(順勢策略: 趨勢年大賺、盤整/空頭年小賠; 日線26年驗證見 gold_daily_backtest.py)")
+    # ── 績效 ──
+    print(f"\n績效 {m['n']}筆｜PF {m['pf']:.2f}｜勝率 {m['win']:.0%}｜DD ${m['dd']/1000:.0f}k｜MAR {m['mar']:.1f}")
+    print(f"逐年 {gs.yearly_line(trades)}")
 
 
 if __name__ == "__main__":
