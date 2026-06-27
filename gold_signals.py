@@ -110,7 +110,8 @@ def main():
         return f"風險{pts:.0f}點/${pts * gs.POINT_VALUE:,.0f}口"
 
     # ── 行情列 ──
-    print(f"{dt[i][5:]} 台北 · 僅做多 {bo}H突破/{stop_mult}ATR\n")
+    print(f"🥇 黃金 GC 順勢突破（僅做多）")
+    print(f"{dt[i][5:]} 台北 · {bo}H突破/{stop_mult}ATR\n")
     print(f"即時 {live:,.1f}｜收盤 {bar_close:,.1f}｜ATR {atr_now:.1f}")
     print(f"突破門檻 {next_level:,.1f}（距 {next_level - live:+,.1f} / {(next_level - live) / live:+.2%}）")
     pd, pdh, pdl = gs.prev_day_high_low(dt, h, l, i)
