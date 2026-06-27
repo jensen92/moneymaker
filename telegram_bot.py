@@ -1091,7 +1091,7 @@ HELP = (
     "/analyze 2330       個股分析 + 進出場價格\n"
     "/backtest [C,D]     組合回測 (慢, 數分鐘)\n"
     "/chart              圖像化儀表板連結 (權益曲線/月損益/R分布)\n"
-    "/futures [M,D,S]    期貨每日訊號 (穀物期貨)\n"
+    "/futures [S,D]      穀物季節+突破訊號 (低DD首選見 /spread)\n"
     "/gold               黃金期貨順勢突破訊號 (小時K, 僅做多)\n"
     "/spread             穀物價差均值回歸 (相對價值, 市場中性, 低DD)\n"
     "/txf                台指期日內策略 (前日高低突破, 小時K)\n"
@@ -1138,7 +1138,7 @@ def handle(chat_id, text):
     elif cmd == "chart":
         send_keyboard(chat_id, chart_text(), [[("🔗 開啟儀表板", _web_url())]])
     elif cmd == "futures":
-        strats = args[0] if args else "M,D,S"
+        strats = args[0] if args else "S,D"
         threading.Thread(target=futures_job, args=(chat_id, strats),
                          daemon=True).start()
     elif cmd == "gold":
@@ -1236,7 +1236,7 @@ def txf_job(chat_id):
         _job_lock.release()
 
 
-def futures_job(chat_id, strats="M,D,S"):
+def futures_job(chat_id, strats="S,D"):
     if not _job_lock.acquire(blocking=False):
         send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
         return
