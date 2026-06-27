@@ -118,6 +118,34 @@ def main():
     if pdh is not None:
         print(f"今日錨點 前日高 {pdh:,.1f}／前日低 {pdl:,.1f}")
 
+    # ── 目前趨勢狀態 (策略視角: 跟隨突破, 非預判方向) ──
+    win = min(120, i)                             # 約 5 個交易日的中期均線
+    ma_mid = float(np.mean(c[i - win + 1:i + 1]))
+    hi24 = float(h[i - bo + 1:i + 1].max())
+    lo24 = float(l[i - bo + 1:i + 1].min())
+    if live > ma_mid and live >= hi24 * 0.997:
+        trend = "🟢 多頭續勢（近24H高, 站中期均上）— 易出現進場訊號"
+    elif live > ma_mid:
+        trend = f"🟡 多頭回檔（站中期均上但距24H高 {(hi24-live)/live:+.1%}）— 待再突破"
+    elif live > lo24 * 1.003:
+        trend = "🟠 盤整/轉弱（跌破中期均, 區間中段）— 多空手等突破"
+    else:
+        trend = "🔴 弱勢/空頭（近24H低, 中期均下方）— 策略空手休息, 不做空"
+    # 目前部位 (讀背景監控狀態; 無則視為空手)
+    pos_txt = "空手"
+    try:
+        sp = os.path.join(gs.HERE, "gold_state.json")
+        if os.path.exists(sp):
+            import json
+            with open(sp) as f:
+                st = json.load(f)
+            if st.get("pos") == 1 and st.get("entry"):
+                pos_txt = f"持有多單 進場{st['entry']:,.1f} 停損{st.get('trail',0):,.1f}"
+    except Exception:
+        pass
+    print(f"趨勢 {trend}")
+    print(f"部位 {pos_txt}")
+
     # ── 訊號區 ──
     sig = gs.signal_breakout(h, l, c, i, cfg, a)
     if sig == 1:
