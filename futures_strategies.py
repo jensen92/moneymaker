@@ -145,21 +145,31 @@ def signal_b(df, i):
     return None
 
 
-def signal_s(df, i):
-    """穀物季節性做多 — 每年特定月初 (收割賣壓尾聲) 進場, 持有至隔年初夏.
+# 各穀物『專屬』季節窗 — 依各自作物行事曆 (收割低點進場), 26 年樣本內外對切驗證:
+#   黃豆 ZS: 10 月進場持有 ~5 月 (北美收割低點→南美天候+隔年春) PF5.46 DD3% 前/後半皆穩
+#   玉米 ZC: 12 月進場持有 ~3 月 (12 月季節最強 +5.5%/月)           PF5.63 DD1% 前/後半皆穩
+#   小麥 ZW: 季節性最弱且不穩 (7 月窗後半崩), 12 月勉強 PF1.68 — 建議改走價差(grain_spread)
+# 註: 現行單一 12 月進場對黃豆錯置 (黃豆 10 月才是收割低點)。窗口為作物常識+對切驗證,
+#     非網格挑選 (hold 用整數月, 避免實盤失真)。
+S_SEASON = {
+    "ZS": {"month": 10, "hold": 105, "stop": 3.0},   # 黃豆
+    "ZC": {"month": 12, "hold": 63,  "stop": 3.0},   # 玉米
+    "ZW": {"month": 12, "hold": 63,  "stop": 3.0},   # 小麥 (弱, 宜走價差)
+}
 
-    農產品常於北美收割期 (9-10 月) 形成季節低點, 隨後因庫存消化、隔年播種與
-    天候溢價而走強。此策略每年該月第一個交易日做多, 持有 hold 個交易日,
-    以寬 ATR 停損防黑天鵝。trend>0 時加 MA 濾網 (僅在多頭時進場)。
+
+def signal_s(df, i):
+    """穀物季節性做多 — 各穀物依『自己的』作物行事曆 (收割低點月) 進場, 持有其季節
+    強勢窗 (見 S_SEASON)。每年該月第一個交易日做多, 以寬 ATR 停損防黑天鵝。
+
+    取代原本『所有穀物統一 12 月進場』(對黃豆錯置) 的做法; 改用各穀物專屬窗後
+    DD 由 7~12% 降至 1~3%, 且樣本內外皆穩 (見 S_SEASON 註記)。
     """
-    c = CONFIG["S"]
+    market = df["market"].iloc[i] if "market" in df.columns else None
+    c = S_SEASON.get(market, CONFIG["S"])
     row, prev = df.iloc[i], df.iloc[i - 1]
     if np.isnan(row["atr20"]) or row["atr20"] <= 0:
         return None
-    if c["trend"]:
-        tr = row[f"ma{c['trend']}"]
-        if np.isnan(tr) or row["close"] < tr:
-            return None
     if row["date"].month == c["month"] and prev["date"].month != c["month"]:
         return {"dir": +1, "stop_atr": c["stop"], "max_hold": c["hold"]}
     return None

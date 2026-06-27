@@ -44,7 +44,9 @@ def load_all():
         if not os.path.exists(path):
             continue
         df = pd.read_csv(path, parse_dates=["date"])
-        data[key] = add_indicators(df).reset_index(drop=True)
+        df = add_indicators(df).reset_index(drop=True)
+        df["market"] = key                 # 供季節策略判斷各穀物專屬窗口
+        data[key] = df
     return data
 
 
