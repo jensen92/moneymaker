@@ -25,3 +25,4 @@ optimize_pf_results.csv
 web_cache/
 fundamentals/
 gold_state.json
+grain_state.json
