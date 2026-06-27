@@ -914,7 +914,35 @@ def _status_text():
     n = (len([f for f in os.listdir(DATA_DIR)
               if f.endswith(".csv") and not f.startswith("_")])
          if DATA_DIR and os.path.isdir(DATA_DIR) else "?")
-    return f"🟢 機器人運作中\n資料夾: {dd}\n股票數: {n}"
+    lines = [f"🟢 機器人運作中", f"資料夾: {dd}", f"股票數: {n}"]
+
+    # 黃金背景監控狀態
+    gold_on = os.environ.get("BOT_GOLD_WATCH", "1").strip() == "1"
+    if gold_on:
+        gi = os.environ.get("BOT_GOLD_WATCH_INTERVAL", "180")
+        pos_txt = "持倉狀態未知"
+        try:
+            import json
+            sp = os.path.join(HERE, "gold_state.json")
+            if os.path.exists(sp):
+                with open(sp) as f:
+                    gs_ = json.load(f)
+                p = gs_.get("pos", 0)
+                pos_txt = {0: "空手", 1: "持多單", -1: "持空單"}.get(p, "?")
+                if p and gs_.get("entry"):
+                    pos_txt += f" 進場 {gs_['entry']:,.1f} 停損 {gs_.get('trail', 0):,.1f}"
+                lb = gs_.get("last_bar")
+                if lb:
+                    pos_txt += f"｜對齊 {lb[5:]}"
+            else:
+                pos_txt = "首次啟動將自動對齊"
+        except Exception:
+            pass
+        lines.append(f"🥇 黃金背景監控: 開啟 (每{gi}秒)｜{pos_txt}")
+    else:
+        lines.append("🥇 黃金背景監控: 關閉 (設 BOT_GOLD_WATCH=1 開啟)")
+
+    return "\n".join(lines)
 
 
 def _refresh_data():
