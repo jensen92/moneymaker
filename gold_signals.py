@@ -107,7 +107,8 @@ def main():
     print(f"即時價 {live:,.2f}  |  最後完成棒收盤 {bar_close:,.2f}  "
           f"|  突破參考價(過去{bo}H高) {next_level:,.2f}  |  ATR {atr_now:,.2f}")
 
-    m = gs.metrics(gs.backtest())
+    trades = gs.backtest()
+    m = gs.metrics(trades)
 
     stop_mult = cfg["atr_stop"]
 
@@ -150,6 +151,8 @@ def main():
 
     print(f"\n策略歷史績效 ({m['n']}筆, 2024-2026): 勝率 {m['win']:.1%}  PF {m['pf']:.2f}  "
           f"最大回撤 ${m['dd']:,.0f}  MAR {m['mar']:.2f}")
+    print(f"逐年損益: {gs.yearly_line(trades)}")
+    print("(順勢策略: 趨勢年大賺、盤整/空頭年小賠; 日線26年驗證見 gold_daily_backtest.py)")
 
 
 if __name__ == "__main__":

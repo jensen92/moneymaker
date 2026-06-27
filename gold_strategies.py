@@ -166,6 +166,25 @@ def metrics(trades):
             "mar": (eq[-1] / dd) if dd > 0 else float("inf")}
 
 
+def yearly(trades):
+    """逐年績效拆解 (以出場年份歸戶) — 看策略在不同行情/regime的表現分布。
+    回傳 [(年, 筆數, 總損益, 勝率), ...] 依年份排序。"""
+    by = {}
+    for t in trades:
+        y = t["exit_date"][:4]
+        by.setdefault(y, []).append(t["pnl"])
+    out = []
+    for y in sorted(by):
+        p = np.array(by[y])
+        out.append((y, len(p), float(p.sum()), float((p > 0).mean())))
+    return out
+
+
+def yearly_line(trades):
+    """精簡單行逐年損益 (供 /gold 等通知用), 例: '2024:+39k 2025:+105k 2026:+65k'。"""
+    return "  ".join(f"{y}:{tot/1000:+.0f}k" for y, _, tot, _ in yearly(trades))
+
+
 def main():
     trades = backtest()
     m = metrics(trades)
@@ -173,6 +192,11 @@ def main():
           f"allow_short={CONFIG['allow_short']})")
     print(f"交易 {m['n']}  勝率 {m['win']:.1%}  PF {m['pf']:.2f}  "
           f"總損益 ${m['total']:+,.0f}  最大DD ${m['dd']:,.0f}  MAR {m['mar']:.2f}")
+    print("\n逐年績效拆解 (不同行情下的表現分布):")
+    for y, n, tot, win in yearly(trades):
+        bar = "█" * int(abs(tot) / 3000)
+        print(f"  {y}  {tot:>+10,.0f}  ({n:>3}筆, 勝率{win:>5.1%})  "
+              f"{'+' if tot >= 0 else '-'}{bar}")
 
 
 if __name__ == "__main__":
