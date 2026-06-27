@@ -154,9 +154,8 @@ def chart_text():
     note = "" if WEB_URL else "\n(未設定 MM_WEB_URL, 此為本機網址, 手機需用內網IP或ngrok才能開)"
     return (f"📊 圖像化儀表板\n{url}\n\n"
             f"頁面含: 權益曲線 / 月度損益 / R值分布 / 交易清單, 可切換策略組合 (例如 C,D 或 K,L)。\n"
-            f"伺服器啟動: python3 webapp.py\n"
-            f"首次需先建快取 (整組回測約十餘分鐘): python3 webapp.py --build C,D K,L\n"
-            f"之後網頁秒開; 建議每日盤後排程重建快取。{note}")
+            f"伺服器已隨機器人自動啟動 (BOT_WEB=1)。首次某組合無快取時, 按頁面「重新計算(較慢)」\n"
+            f"即可即時運算 (整組回測約十餘分鐘), 完成後會寫入快取, 之後秒開。{note}")
 
 
 def send_get_id(chat_id, text):
@@ -1394,6 +1393,15 @@ def main():
     # 穀物價差背景監控 (預設開啟; 設 BOT_GRAIN_WATCH=0 可關閉)
     if os.environ.get("BOT_GRAIN_WATCH", "1").strip() == "1":
         threading.Thread(target=grain_watch_loop, daemon=True).start()
+    # 圖像化儀表板伺服器 (預設開啟; 設 BOT_WEB=0 可關閉) — 讓 /chart 連結可用
+    if os.environ.get("BOT_WEB", "1").strip() == "1":
+        def _serve_web():
+            try:
+                import webapp
+                webapp.serve()
+            except Exception as e:  # noqa: BLE001
+                print("儀表板伺服器啟動失敗:", e)
+        threading.Thread(target=_serve_web, daemon=True).start()
     try:
         r0 = requests.get(f"{API}/getUpdates", params={"offset": -1}, timeout=10)
         updates0 = r0.json().get("result", [])

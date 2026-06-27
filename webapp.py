@@ -190,7 +190,8 @@ HTML_PAGE = """<!doctype html>
 <header>
   <strong>📊 策略儀表板</strong>
   <input id="strats" value="C,D">
-  <button onclick="reload()">重新計算</button>
+  <button onclick="reload(false)">載入</button>
+  <button onclick="reload(true)">重新計算(較慢)</button>
   <span id="status"></span>
 </header>
 <div class="summary" id="summary"></div>
@@ -212,14 +213,20 @@ function destroyAll() { Object.values(charts).forEach(c => c && c.destroy()); }
 
 function fmt(n) { return Number(n).toLocaleString(); }
 
-async function reload() {
+async function reload(compute) {
   const strats = document.getElementById('strats').value || 'C,D';
   const status = document.getElementById('status');
-  status.textContent = '⏳ 載入快取...';
+  status.textContent = compute ? '⏳ 計算中 (整組回測, 約十餘分鐘, 請勿關閉)...'
+                               : '⏳ 載入快取...';
   try {
-    const r = await fetch('/api/data?strats=' + encodeURIComponent(strats));
+    const url = '/api/data?strats=' + encodeURIComponent(strats)
+              + (compute ? '&compute=1' : '');
+    const r = await fetch(url);
     const j = await r.json();
-    if (j.error) { status.textContent = '❌ ' + j.error; return; }
+    if (j.error) {
+      status.textContent = '❌ ' + j.error + '（按「重新計算」即可即時運算）';
+      return;
+    }
     status.textContent = '✅ 完成';
     render(j);
   } catch (e) {
@@ -281,7 +288,7 @@ function render(j) {
     </tr>`).join('');
 }
 
-reload();
+reload(false);
 </script>
 </body>
 </html>
@@ -343,9 +350,16 @@ def main():
             r = build_cache(combo)
             print(f"  完成: {r['summary'].get('trades', 0)} 筆交易 → {_cache_path(_normkey(combo))}")
         return
-    with http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler) as httpd:
-        print(f"儀表板啟動: http://localhost:{port}  (區網請用本機 IP 取代 localhost)")
-        httpd.serve_forever()
+    serve(port)
+
+
+def serve(port=None):
+    """啟動儀表板 HTTP 伺服器 (供 CLI 或 telegram_bot 背景執行緒呼叫)。"""
+    if port is None:
+        port = int(os.environ.get("MM_WEB_PORT", "8800"))
+    httpd = http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    print(f"儀表板啟動: http://localhost:{port}  (區網請用本機 IP 取代 localhost)")
+    httpd.serve_forever()
 
 
 if __name__ == "__main__":
