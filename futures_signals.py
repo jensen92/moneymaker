@@ -46,7 +46,7 @@ def prospective(key, market, df, capital, risk_pct):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--strategies", default="S,D")
+    ap.add_argument("--strategies", default="S")
     ap.add_argument("--capital", type=float, default=INIT_CAPITAL)
     ap.add_argument("--risk", type=float, default=RISK_PCT)
     args = ap.parse_args()
@@ -113,8 +113,9 @@ def main():
             if plan:
                 print(f"{key}·{FUTURES[market]['name']}：{plan}")
     print("(持倉依各策略移動停損/通道出場規則管理)")
-    print("\n💡 低DD首選 → /spread 穀物價差(市場中性 DD8-13%)")
-    print("   D=唐奇安趨勢屬高DD(40%), 僅供突破盯盤; 完整趨勢清單 /futures M,D,T,B")
+    print("\n💡 短線交易首選 → /spread 穀物價差(市場中性, 勝率72-81%, DD9-10%)")
+    print("   穀物單邊趨勢(D/M)DD高(30-40%)且短線無穩定edge, 已不列預設;")
+    print("   如需趨勢清單可 /futures D,M,T,B (高DD自行斟酌)")
 
 
 if __name__ == "__main__":

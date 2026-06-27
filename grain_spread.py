@@ -31,7 +31,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
 
 PV = 50.0                 # 每點 $ (三穀物同規格: 5000 bushels, $50/點)
 COST = 0.30 * PV * 2      # 單腿往返成本估計; 價差兩腿合計於下方乘 2
-WIN = 252                 # 均值/標準差回看窗 (約一年, 常規值)
+WIN = 120                 # 均值/標準差回看窗 (短線版~半年; 252日長線版更穩但較少交易)
 Z_IN = 1.5                # 進場門檻 (偏離均值幾個標準差)
 Z_OUT = 0.3               # 出場門檻 (回到均值附近)
 
@@ -128,7 +128,7 @@ def metrics(trades, curve, eq0=250000.0):
 
 
 def current_z(legA, legB, win=WIN):
-    """回傳 (z, 價差現值, 均值) — 供即時訊號。"""
+    """回傳 (z, 價差現值, 均值, 標準差, A腿現價, B腿現價, 日期) — 供即時訊號/掛單價。"""
     a_d, b_d = _load(legA), _load(legB)
     days = sorted(set(a_d) & set(b_d))
     sp = np.array([a_d[d] - b_d[d] for d in days])
@@ -138,7 +138,8 @@ def current_z(legA, legB, win=WIN):
     s = sp[-win:].std()
     if s <= 0:
         return None
-    return (sp[-1] - m) / s, float(sp[-1]), float(m), days[-1]
+    return ((sp[-1] - m) / s, float(sp[-1]), float(m), float(s),
+            float(a_d[days[-1]]), float(b_d[days[-1]]), days[-1])
 
 
 def main():
@@ -148,8 +149,8 @@ def main():
     if not args.no_fetch:
         fetch_grains()
 
-    print("🌽 穀物價差均值回歸（相對價值, 市場中性）")
-    print(f"規則 z>{Z_IN}進場 |z|<{Z_OUT}出場 · {WIN}日窗 · 1:1口\n")
+    print("⚖️ 穀物價差均值回歸（短線, 市場中性）")
+    print(f"規則 z>{Z_IN}進場 |z|<{Z_OUT}出場（回均值）· {WIN}日窗 · 1:1口\n")
     for a, b, name in PAIRS:
         cz = current_z(a, b)
         tr, cv, _ = backtest(a, b)
@@ -157,20 +158,25 @@ def main():
         if cz is None or m is None:
             print(f"{name}：資料不足")
             continue
-        z, sp_now, mean, d = cz
-        # 即時訊號
-        if z > Z_IN:
-            sig = f"🔴 做空價差（空{name[:2]}/多{name[3:]}）"
-        elif z < -Z_IN:
-            sig = f"🟢 做多價差（多{name[:2]}/空{name[3:]}）"
-        elif abs(z) < Z_OUT:
-            sig = "⚪ 接近均值（無倉/可平倉）"
-        else:
-            sig = "⚪ 區間內待訊號"
-        print(f"{name}：價差 {sp_now:,.1f}（均值 {mean:,.1f}）z={z:+.2f}  {sig}")
-        print(f"  績效 {m['n']}筆｜勝率 {m['win']:.0%}｜PF {m['pf']:.2f}｜"
-              f"DD {m['dd']:.0%}｜總${m['total']:+,.0f}")
-    print("\n(市場中性: 兩腿對沖大盤方向, DD 約單邊趨勢一半; 小麥於此當一腿而非單獨做)")
+        z, sp_now, mean, std, pxA, pxB, d = cz
+        nA, nB = name[:2], name[3:]
+        in_hi = mean + Z_IN * std        # 價差≥此 → 做空價差掛單點
+        in_lo = mean - Z_IN * std        # 價差≤此 → 做多價差掛單點
+        if z > Z_IN:                     # 已觸發: 做空價差 (空A多B)
+            print(f"{name}  z={z:+.2f}  🔴 做空價差（空{nA}/多{nB}）")
+            print(f"  進場 賣{nA}@{pxA:,.1f} 買{nB}@{pxB:,.1f}｜價差 {sp_now:,.1f}")
+            print(f"  出場目標 價差回 {mean:,.1f}（收斂 {sp_now-mean:+,.0f}點 ≈ ${(sp_now-mean)*PV:,.0f}/組）")
+        elif z < -Z_IN:                  # 已觸發: 做多價差 (多A空B)
+            print(f"{name}  z={z:+.2f}  🟢 做多價差（多{nA}/空{nB}）")
+            print(f"  進場 買{nA}@{pxA:,.1f} 賣{nB}@{pxB:,.1f}｜價差 {sp_now:,.1f}")
+            print(f"  出場目標 價差回 {mean:,.1f}（收斂 {mean-sp_now:+,.0f}點 ≈ ${(mean-sp_now)*PV:,.0f}/組）")
+        else:                            # 待訊號: 給掛單觸發價
+            print(f"{name}  z={z:+.2f}  ⚪ 待訊號（現價差 {sp_now:,.1f} 均值 {mean:,.1f}）")
+            print(f"  做多價差掛單: 價差跌至 {in_lo:,.1f} 以下（買{nA}/賣{nB}）→ 出場回 {mean:,.1f}")
+            print(f"  做空價差掛單: 價差升至 {in_hi:,.1f} 以上（賣{nA}/買{nB}）→ 出場回 {mean:,.1f}")
+        print(f"  績效 {m['n']}筆｜勝率 {m['win']:.0%}｜PF {m['pf']:.2f}｜DD {m['dd']:.0%}")
+    print("\n進場=z達±1.5標準差(掛單價如上); 出場=價差回均值(z→0)。1組=各買賣1口(同$50/點)。")
+    print("(市場中性: 兩腿對沖大盤方向, DD 約單邊趨勢一半; 小麥於此當一腿而非單獨硬做)")
 
 
 if __name__ == "__main__":
