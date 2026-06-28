@@ -1032,11 +1032,25 @@ def txf_watch_loop():
     import datetime as dt
     interval = int(os.environ.get("BOT_TXF_WATCH_INTERVAL", "120"))
     last_notified = {}  # date -> status 已推播過的狀態 ('open'/'stopped'/'closed')
+    pc_alerted = set()  # 已推播過極端情緒的日期 (每日一次)
+    last_pc_check = 0.0
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
     import importlib
     while True:
         now = dt.datetime.now()
+        # 選擇權極端情緒: 每 30 分檢查 (不限盤中, 因 P/C 收盤後才更新), 極端且當日未推過才推
+        if time.time() - last_pc_check > 1800:
+            last_pc_check = time.time()
+            try:
+                import txo_sentiment
+                importlib.reload(txo_sentiment)
+                pdate, ptxt = txo_sentiment.extreme_alert()
+                if ptxt and pdate not in pc_alerted:
+                    send(ALLOWED_CHAT, ptxt)
+                    pc_alerted.add(pdate)
+            except Exception as e:  # noqa: BLE001
+                print("選擇權極端情緒檢查錯誤:", e)
         in_session = (now.weekday() < 5
                       and (now.hour, now.minute) >= (9, 0)
                       and (now.hour, now.minute) <= (13, 35))
