@@ -104,5 +104,22 @@ def week_report():
             f"{note}")
 
 
+def extreme_alert():
+    """若最新 P/C 為極端值 (≥PANIC 恐慌 / ≤EUPHORIA 樂觀), 回傳 (date, 推播文字);
+    否則 (date_or_None, None)。供盤中監控『極端時單獨推播一次』, 呼叫端以 date 去重。"""
+    hist = fetch_pcr(2)
+    if not hist:
+        return None, None
+    date, pc = hist[-1]
+    if pc < PANIC and pc > EUPHORIA:
+        return date, None
+    last = hist[-5:]
+    wk = "｜".join(f"{d[5:]} {v:.0f}" for d, v in last)
+    label, note = classify(pc)
+    head = "🔥 選擇權極端恐慌訊號" if pc >= PANIC else "🔥 選擇權極端樂觀訊號"
+    return date, (f"{head}（P/C未平倉比率 {pc:.0f}）\n"
+                  f"近一週 {wk}\n{label}\n{note}")
+
+
 if __name__ == "__main__":
     print(report() or "❌ 無法取得 P/C 資料")
