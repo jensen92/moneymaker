@@ -82,5 +82,27 @@ def report():
             f"  {label}\n  {note}")
 
 
+def week_report():
+    """含『近一週』P/C 走勢的情緒文字 (供盤中推播)。失敗回 None。"""
+    hist = fetch_pcr(2)
+    if not hist:
+        return None
+    last = hist[-5:]                      # 近 5 個交易日
+    date, pc = hist[-1]
+    label, note = classify(pc)
+    # 近一週趨勢: 比較本週首尾
+    if len(last) >= 2:
+        diff = last[-1][1] - last[0][1]
+        trend = ("恐慌升溫→更偏多" if diff >= 8 else
+                 "樂觀升溫→轉謹慎" if diff <= -8 else "大致持平")
+    else:
+        trend = ""
+    wk = "｜".join(f"{d[5:]} {v:.0f}" for d, v in last)
+    return (f"🎲 選擇權情緒 P/C未平倉比率（賣權OI/買權OI）\n"
+            f"近一週 {wk}\n"
+            f"今日 {pc:.0f} {label}（週趨勢: {trend}）\n"
+            f"{note}")
+
+
 if __name__ == "__main__":
     print(report() or "❌ 無法取得 P/C 資料")
