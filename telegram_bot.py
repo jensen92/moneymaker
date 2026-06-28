@@ -141,8 +141,8 @@ def send_menu(chat_id):
     rows = [
         [("📋 全市場掃描", "scan"), ("📈 本年清單", "year")],
         [("🌽 穀物期貨", "futures"), ("🥇 黃金期貨", "gold")],
-        [("⚖️ 穀物價差", "spread"), ("📐 台指期", "txf")],
-        [("📊 儀表板", "chart")],
+        [("⚖️ 穀物價差", "spread"), ("🔥 能源季節", "energy")],
+        [("📐 台指期", "txf"), ("📊 儀表板", "chart")],
         [("🧠 策略說明", "info"), ("📊 機器人狀態", "status")],
         [("📥 更新股價資料", "refresh"), ("🔄 同步最新策略", "update")],
     ]
@@ -1138,6 +1138,7 @@ HELP = (
     "/futures [S]        穀物季節做多 (各穀物專屬窗, 低DD)\n"
     "/gold               黃金期貨順勢突破訊號 (小時K, 僅做多)\n"
     "/spread             穀物價差均值回歸 (短線, 市場中性, 含進出場價)\n"
+    "/energy             能源季節做多 (NG天然氣/CL原油, 季節非趨勢)\n"
     "/txf                台指期日內策略 (前日高低突破, 小時K)\n"
     "/refresh            更新股價歷史資料 (增量下載)\n"
     "/update             git pull 雲端最新策略並重啟\n"
@@ -1189,6 +1190,8 @@ def handle(chat_id, text):
         threading.Thread(target=gold_job, args=(chat_id,), daemon=True).start()
     elif cmd in ("spread", "grain"):
         threading.Thread(target=grain_spread_job, args=(chat_id,), daemon=True).start()
+    elif cmd in ("energy", "ng", "cl"):
+        threading.Thread(target=energy_job, args=(chat_id,), daemon=True).start()
     elif cmd == "txf":
         threading.Thread(target=txf_job, args=(chat_id,), daemon=True).start()
     elif cmd == "refresh":
@@ -1232,6 +1235,9 @@ def handle_callback(chat_id, data):
                          daemon=True).start()
     elif data == "spread":
         threading.Thread(target=grain_spread_job, args=(chat_id,),
+                         daemon=True).start()
+    elif data == "energy":
+        threading.Thread(target=energy_job, args=(chat_id,),
                          daemon=True).start()
     elif data == "gold":
         threading.Thread(target=gold_job, args=(chat_id,),
@@ -1300,6 +1306,18 @@ def grain_spread_job(chat_id):
     try:
         send(chat_id, "⏳ 更新穀物日線 + 計算價差 z-score 中...")
         out = run_script(["grain_spread.py"])
+        send(chat_id, out)
+    finally:
+        _job_lock.release()
+
+
+def energy_job(chat_id):
+    if not _job_lock.acquire(blocking=False):
+        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
+        return
+    try:
+        send(chat_id, "⏳ 更新能源日線 + 計算季節訊號中...")
+        out = run_script(["energy_signals.py"])
         send(chat_id, out)
     finally:
         _job_lock.release()
