@@ -184,7 +184,7 @@ def live_report():
     # 選擇權反向情緒 (P/C 未平倉比率) — 輔助方向偏好
     try:
         import txo_sentiment
-        s = txo_sentiment.report()
+        s = txo_sentiment.week_report()
         if s:
             lines.append("")
             lines.append(s)

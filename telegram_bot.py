@@ -1050,11 +1050,18 @@ def txf_watch_loop():
             if trade is not None and last_notified.get(today_d) != trade["status"]:
                 st = {"open": "🚨 已觸發進場", "stopped": "🛑 已停損出場",
                       "closed": "🔔 已收盤平倉"}[trade["status"]]
-                send(ALLOWED_CHAT,
-                     f"{st}: 台指日內策略 {trade['dir']}單\n"
-                     f"進場 {trade['entry']:.0f} → "
-                     f"{trade['exit']:.0f}  {trade['pnl_pt']:+.0f} 點 "
-                     f"(NT${trade['pnl_nt']:+,.0f})")
+                msg = (f"{st}: 台指日內策略 {trade['dir']}單\n"
+                       f"進場 {trade['entry']:.0f} → "
+                       f"{trade['exit']:.0f}  {trade['pnl_pt']:+.0f} 點 "
+                       f"(NT${trade['pnl_nt']:+,.0f})")
+                try:
+                    import txo_sentiment
+                    s = txo_sentiment.week_report()
+                    if s:
+                        msg += "\n\n" + s
+                except Exception:
+                    pass
+                send(ALLOWED_CHAT, msg)
                 last_notified[today_d] = trade["status"]
         except Exception as e:  # noqa: BLE001
             print("台指盤中監控錯誤:", e)
