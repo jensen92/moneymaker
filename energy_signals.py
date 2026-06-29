@@ -115,6 +115,7 @@ def metrics(R):
         return None
     w = R[R > 0]; ls = R[R < 0]
     eq = np.cumsum(R); dd = (np.maximum.accumulate(eq) - eq).max()
+    # 'mar' = 累計R ÷ 最大R回撤 (報酬/回撤比), 非年化 MAR; 顯示標『報酬/回撤比』。
     return {"n": len(R), "win": float((R > 0).mean()), "ev": float(R.mean()),
             "payoff": float(w.mean() / -ls.mean()) if len(ls) and len(w) else 0,
             "mar": float(eq[-1] / dd) if dd > 0 else 0}
@@ -179,7 +180,7 @@ def main():
             print(f"  ⚪ 待 {s['entry_m']}月進場（還 {s['months_to_entry']} 個月）")
         if m:
             print(f"  EV/筆 {m['ev']:+.2f}R｜勝率 {m['win']:.0%}｜賺賠 {m['payoff']:.2f}｜"
-                  f"MAR {m['mar']:.1f}（{m['n']}年）")
+                  f"報酬/回撤比 {m['mar']:.1f}（{m['n']}年）")
     print("\n(能源=季節非趨勢; 一年一次, 單獨報酬低, 價值在與股票/黃金低相關的分散)")
 
 

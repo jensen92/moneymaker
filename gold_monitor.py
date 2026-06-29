@@ -37,7 +37,7 @@ def _perf_line():
     try:
         m = gs.metrics(gs.backtest())
         return (f"回測 {m['n']}筆｜PF {m['pf']:.2f}｜勝率 {m['win']:.0%}｜"
-                f"DD ${m['dd']/1000:.0f}k｜MAR {m['mar']:.1f}")
+                f"DD ${m['dd']/1000:.0f}k｜報酬/回撤比 {m['mar']:.1f}")
     except Exception:
         return "回測: 順勢突破 (詳見 /gold)"
 

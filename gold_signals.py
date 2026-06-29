@@ -170,7 +170,7 @@ def main():
         print("停利 無 · ATR移動停損鎖利")
 
     # ── 績效 ──
-    print(f"\n績效 {m['n']}筆｜PF {m['pf']:.2f}｜勝率 {m['win']:.0%}｜DD ${m['dd']/1000:.0f}k｜MAR {m['mar']:.1f}")
+    print(f"\n績效 {m['n']}筆｜PF {m['pf']:.2f}｜勝率 {m['win']:.0%}｜DD ${m['dd']/1000:.0f}k｜報酬/回撤比 {m['mar']:.1f}")
     print(f"逐年 {gs.yearly_line(trades)}")
 
 
