@@ -141,7 +141,7 @@ def send_menu(chat_id):
     rows = [
         [("📋 全市場掃描", "scan"), ("📈 本年清單", "year")],
         [("🌽 穀物期貨", "futures"), ("🥇 黃金期貨", "gold")],
-        [("⚖️ 穀物價差", "spread"), ("🔥 能源季節", "energy")],
+        [("🌾 穀物個別", "grainsig"), ("🔥 能源季節", "energy")],
         [("📐 台指期", "txf"), ("📊 儀表板", "chart")],
         [("🧠 策略說明", "info"), ("📊 機器人狀態", "status")],
         [("📥 更新股價資料", "refresh"), ("🔄 同步最新策略", "update")],
@@ -974,14 +974,6 @@ def _status_text():
     else:
         lines.append("📐 台指盤中監控: 關閉 (設 BOT_TXF_WATCH=1 開啟)")
 
-    # 穀物價差背景監控狀態
-    grain_on = os.environ.get("BOT_GRAIN_WATCH", "1").strip() == "1"
-    if grain_on:
-        gri = os.environ.get("BOT_GRAIN_WATCH_INTERVAL", "1800")
-        lines.append(f"⚖️ 穀物價差監控: 開啟 (每{int(gri)//60}分)")
-    else:
-        lines.append("⚖️ 穀物價差監控: 關閉 (設 BOT_GRAIN_WATCH=1 開啟)")
-
     return "\n".join(lines)
 
 
@@ -1100,24 +1092,6 @@ def gold_watch_loop():
         time.sleep(interval)
 
 
-def grain_watch_loop():
-    """背景輪詢穀物價差 z-score, 越過 ±1.5 (進場) 或回均值 (出場) 即推播。
-    穀物日線每日收盤後更新, 故輪詢間隔長 (預設每 30 分鐘); 設 BOT_GRAIN_WATCH=0 可關閉。"""
-    if not ALLOWED_CHAT:
-        print("未設定 TELEGRAM_CHAT_ID, 略過穀物價差背景監控")
-        return
-    import grain_monitor
-    interval = int(os.environ.get("BOT_GRAIN_WATCH_INTERVAL", "1800"))
-    while True:
-        try:
-            alert, _ = grain_monitor.check_live()
-            if alert:
-                send(ALLOWED_CHAT, "⚖️ 穀物價差訊號\n\n" + alert)
-        except Exception as e:  # noqa: BLE001
-            print("穀物價差背景監控錯誤:", e)
-        time.sleep(interval)
-
-
 def scheduler_loop():
     """每天 08:00 (本機時間) 自動全市場掃描並推播給授權使用者."""
     if not ALLOWED_CHAT:
@@ -1158,7 +1132,7 @@ HELP = (
     "/chart              圖像化儀表板連結 (權益曲線/月損益/R分布)\n"
     "/futures [S]        穀物季節做多 (各穀物專屬窗, 低DD)\n"
     "/gold               黃金期貨順勢突破訊號 (小時K, 僅做多)\n"
-    "/spread             穀物價差均值回歸 (短線, 市場中性, 含進出場價)\n"
+    "/grain              穀物期貨個別季節進出場 (ZC/ZS/ZW, 含進場/停損/出場)\n"
     "/energy             能源季節做多 (NG天然氣/CL原油, 季節非趨勢)\n"
     "/txf                台指期日內策略 (前日高低突破, 小時K)\n"
     "/refresh            更新股價歷史資料 (增量下載)\n"
@@ -1209,8 +1183,8 @@ def handle(chat_id, text):
                          daemon=True).start()
     elif cmd == "gold":
         threading.Thread(target=gold_job, args=(chat_id,), daemon=True).start()
-    elif cmd in ("spread", "grain"):
-        threading.Thread(target=grain_spread_job, args=(chat_id,), daemon=True).start()
+    elif cmd in ("grain", "grains"):
+        threading.Thread(target=grain_sig_job, args=(chat_id,), daemon=True).start()
     elif cmd in ("energy", "ng", "cl"):
         threading.Thread(target=energy_job, args=(chat_id,), daemon=True).start()
     elif cmd == "txf":
@@ -1254,8 +1228,8 @@ def handle_callback(chat_id, data):
     elif data == "futures":
         threading.Thread(target=futures_job, args=(chat_id,),
                          daemon=True).start()
-    elif data == "spread":
-        threading.Thread(target=grain_spread_job, args=(chat_id,),
+    elif data == "grainsig":
+        threading.Thread(target=grain_sig_job, args=(chat_id,),
                          daemon=True).start()
     elif data == "energy":
         threading.Thread(target=energy_job, args=(chat_id,),
@@ -1320,13 +1294,13 @@ def futures_job(chat_id, strats="S"):
         _job_lock.release()
 
 
-def grain_spread_job(chat_id):
+def grain_sig_job(chat_id):
     if not _job_lock.acquire(blocking=False):
         send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
         return
     try:
-        send(chat_id, "⏳ 更新穀物日線 + 計算價差 z-score 中...")
-        out = run_script(["grain_spread.py"])
+        send(chat_id, "⏳ 更新穀物日線 + 計算個別季節訊號中...")
+        out = run_script(["grain_signals.py"])
         send(chat_id, out)
     finally:
         _job_lock.release()
@@ -1429,9 +1403,6 @@ def main():
     # 黃金期貨背景即時監控 (預設開啟; 設 BOT_GOLD_WATCH=0 可關閉)
     if os.environ.get("BOT_GOLD_WATCH", "1").strip() == "1":
         threading.Thread(target=gold_watch_loop, daemon=True).start()
-    # 穀物價差背景監控 (預設開啟; 設 BOT_GRAIN_WATCH=0 可關閉)
-    if os.environ.get("BOT_GRAIN_WATCH", "1").strip() == "1":
-        threading.Thread(target=grain_watch_loop, daemon=True).start()
     # 圖像化儀表板伺服器 (預設開啟; 設 BOT_WEB=0 可關閉) — 讓 /chart 連結可用
     if os.environ.get("BOT_WEB", "1").strip() == "1":
         def _serve_web():
