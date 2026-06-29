@@ -10,6 +10,10 @@
       極端樂觀 P/C≤87 (前15%): 後5日 +0.23% (偏弱)
   - P/C『日變化』(分布移動) 相關 -0.009, 無預測力 → 用水準, 不用變化。
 用途: 反向情緒『偏多/中性/偏空』濾網, 輔助 TXF 日內進出 (非獨立策略)。
+
+⚠ 樣本內揭露: 門檻 (138/115/90/87) 與邊際 (+1.06%/+0.19%) 皆在同一段 2021-26
+   資料上以分位數挑出並回報, 屬樣本內, 未做樣本外驗證; 邊際本就溫和 (隔日+0.19%),
+   應僅當『方向偏好的輔助』, 切勿單獨據此進場或放大部位。
 """
 import time
 
@@ -24,12 +28,14 @@ EUPHORIA = 87  # ≤ 此 = 極端樂觀 → 偏空/謹慎
 
 def fetch_pcr(months=2):
     """抓最近 months 個月的 P/C 未平倉比率, 回傳 [(date, ratio), ...] 由舊到新。"""
+    import calendar
     import requests
     out = {}
     now = time.localtime()
     y, m = now.tm_year, now.tm_mon
     for _ in range(months):
-        d1 = f"{y}/{m:02d}/01"; d2 = f"{y}/{m:02d}/28"
+        last = calendar.monthrange(y, m)[1]      # 當月實際最後一天 (避免月底 29-31 漏抓)
+        d1 = f"{y}/{m:02d}/01"; d2 = f"{y}/{m:02d}/{last:02d}"
         try:
             r = requests.post("https://www.taifex.com.tw/cht/3/pcRatioDown",
                               data={"queryStartDate": d1, "queryEndDate": d2},
