@@ -97,6 +97,35 @@ def check_live():
 
     new_bar = bar_ts != state["last_bar"]
 
+    # 追補中間棒: 兩次輪詢間若一次出現多根已完成棒 (例如停機/斷網後), 先以收盤
+    # 逐根處理中間棒 (不含最後一根, 由下方主邏輯處理), 確保不漏進場、移動停損不跳過
+    # 中間高水位、且中間棒收盤觸發的停損會被認列。中間棒狀態更新但不另發通知。
+    if new_bar and state["last_bar"] in dt:
+        li = dt.index(state["last_bar"])
+        for k in range(li + 1, i):
+            if state["pos"] == 0:
+                sk = gs.signal_breakout(h, l, c, k, cfg, a)
+                if sk == 1:
+                    state = {"pos": 1, "entry": float(c[k]),
+                             "trail": float(c[k] - cfg["atr_stop"] * a[k]),
+                             "last_bar": dt[k], "alerted_level": None}
+                elif cfg["allow_short"] and sk == -1:
+                    state = {"pos": -1, "entry": float(c[k]),
+                             "trail": float(c[k] + cfg["atr_stop"] * a[k]),
+                             "last_bar": dt[k], "alerted_level": None}
+            elif state["pos"] == 1:
+                state["trail"] = max(state["trail"], float(c[k] - cfg["atr_stop"] * a[k]))
+                if c[k] <= state["trail"]:
+                    state = {"pos": 0, "entry": None, "trail": None,
+                             "last_bar": dt[k], "alerted_level": None}
+            elif state["pos"] == -1:
+                state["trail"] = min(state["trail"], float(c[k] + cfg["atr_stop"] * a[k]))
+                if c[k] >= state["trail"]:
+                    state = {"pos": 0, "entry": None, "trail": None,
+                             "last_bar": dt[k], "alerted_level": None}
+            state["last_bar"] = dt[k]
+        new_bar = bar_ts != state["last_bar"]     # 重算 (中間棒處理後)
+
     if state["pos"] == 0:
         sig = gs.signal_breakout(h, l, c, i, cfg, a) if new_bar else None
         if sig == 1:

@@ -54,9 +54,12 @@ def check_live(fetch=True):
         st = state.get(key, {"pos": 0})
         pos = st.get("pos", 0)
 
-        # 首次啟動該組: 對齊現況, 不補發 (避免一啟動就洗一排歷史訊號)
+        # 首次啟動該組: 一律以『空手』對齊, 不直接依當前 z 建倉。
+        # (舊版若啟動時 z 已極端會靜默設 pos=±1, 之後 z 回均值時發出『該部位從未通知過
+        #  進場』的幽靈平倉。改為空手後: 若當前確實處於可進場的 |z|>1.5, 下一輪 pos==0
+        #  分支會正常發出『真實當前進場訊號』, 不再有幽靈平倉。)
         if key not in state:
-            state[key] = {"pos": 1 if z < -gx.Z_IN else (-1 if z > gx.Z_IN else 0)}
+            state[key] = {"pos": 0}
             continue
 
         if pos == 0:

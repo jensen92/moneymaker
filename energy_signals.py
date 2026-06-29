@@ -78,10 +78,12 @@ def _load(key):
 
 
 def _atr(h, l, c, n=20):
+    a = np.full(len(c), np.nan)
+    if len(c) < n:                       # 序列過短保護 (與 gold_strategies 一致)
+        return a
     tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]),
                                               np.abs(l[1:] - c[:-1])))
     tr = np.concatenate([[h[0] - l[0]], tr])
-    a = np.full(len(c), np.nan)
     a[n - 1] = tr[:n].mean()
     for i in range(n, len(c)):
         a[i] = (a[i - 1] * (n - 1) + tr[i]) / n
@@ -119,23 +121,40 @@ def metrics(R):
 
 
 def _state(key):
-    """目前季節狀態: 待進場 / 進場月 / 持有中。回傳 dict。"""
+    """目前季節狀態 — 以回測同邏輯重放找『目前實際部位』(待進場/進場日/持有中),
+    確保與 backtest 的 21×hold_mo 交易日持有窗完全一致 (不再用日曆月近似)。"""
     cfg = CONFIG[key]
     dt, o, h, l, c = _load(key)
     a = _atr(h, l, c, 20)
-    i = len(c) - 1
-    cur_m = int(dt[i][5:7])
-    price = float(c[i]); atr = float(a[i]); st = cfg["stop_atr"]
-    em = cfg["month"]; hold_m = cfg["hold_mo"]
-    # 持有窗: 進場月起算 hold_mo 個月 (跨年處理)
-    months_since = (cur_m - em) % 12
-    in_entry = (cur_m == em)
-    holding = (0 <= months_since < hold_m) and not in_entry
-    exit_m = ((em + hold_m - 1) % 12) + 1
-    return {"price": price, "atr": atr, "stop": price - st * atr,
-            "entry_m": em, "exit_m": exit_m, "cur_m": cur_m,
-            "in_entry": in_entry, "holding": holding,
-            "months_to_entry": (em - cur_m) % 12, "name": cfg["name"], "st": st}
+    n = len(c); i = n - 1
+    hold = int(21 * cfg["hold_mo"]); st = cfg["stop_atr"]; em = cfg["month"]
+    price = float(c[i]); atr = float(a[i]); cur_m = int(dt[i][5:7])
+    # 找最近一次進場 (進場月第一個交易日) 與其實際出場索引 (停損或到期)
+    ydone = set(); last_e = None
+    for k in range(21, n):
+        m = int(dt[k][5:7]); pm = int(dt[k - 1][5:7]); yr = dt[k][:4]
+        if m == em and pm != em and yr not in ydone and not np.isnan(a[k]):
+            ydone.add(yr); last_e = k
+    pos = None
+    if last_e is not None:
+        entry = c[last_e]; stop = entry - st * a[last_e]; exit_i = min(last_e + hold, n - 1)
+        close_i = exit_i
+        for k in range(last_e + 1, exit_i + 1):
+            if c[k] <= stop:
+                close_i = k; break
+        if last_e <= i < close_i:            # 目前仍持倉 (含進場日, 不含出場日)
+            pos = {"entry": float(entry), "stop": float(stop),
+                   "exit_i": exit_i, "exit_m": int(dt[exit_i][5:7]),
+                   "days_left": exit_i - i, "just_entered": (last_e == i)}
+    in_entry = pos is not None and pos["just_entered"]
+    holding = pos is not None and not pos["just_entered"]
+    exit_m = pos["exit_m"] if pos else ((em + cfg["hold_mo"] - 1) % 12) + 1
+    return {"price": price, "atr": atr, "cur_m": cur_m, "entry_m": em, "exit_m": exit_m,
+            "in_entry": in_entry, "holding": holding, "st": st, "name": cfg["name"],
+            "pos": pos, "months_to_entry": (em - cur_m) % 12,
+            "entry": pos["entry"] if pos else None,
+            "stop": pos["stop"] if pos else price - st * atr,
+            "days_left": pos["days_left"] if pos else 0}
 
 
 def main():
@@ -151,10 +170,11 @@ def main():
         print(f"\n{s['name']}  現價 {s['price']:,.2f}｜ATR {s['atr']:.2f}"
               f"｜季節窗 {s['entry_m']}月進→{s['exit_m']}月出")
         if s["in_entry"]:
-            print(f"  🟢 進場月！買進 {s['price']:,.2f}｜停損 {s['stop']:,.2f}"
-                  f"（{s['st']}×ATR）｜持有到 {s['exit_m']}月")
+            print(f"  🟢 進場日！買進 {s['entry']:,.2f}｜停損 {s['stop']:,.2f}"
+                  f"（{s['st']}×ATR）｜持有到 {s['exit_m']}月（約{s['days_left']}交易日）")
         elif s["holding"]:
-            print(f"  🟡 持有中（季節窗內）｜參考停損 {s['stop']:,.2f}｜{s['exit_m']}月到期出場")
+            print(f"  🟡 持有中｜進場 {s['entry']:,.2f}｜停損 {s['stop']:,.2f}｜"
+                  f"{s['exit_m']}月到期（剩約{s['days_left']}交易日）")
         else:
             print(f"  ⚪ 待 {s['entry_m']}月進場（還 {s['months_to_entry']} 個月）")
         if m:
