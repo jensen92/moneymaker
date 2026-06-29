@@ -131,7 +131,7 @@ def main():
     print(f"黃金日線 {len(c)} 根  {dt[0]} ~ {dt[-1]}  (26年跨regime驗證, 只做多)\n")
 
     print("參數網格 (Donchian突破窗日 × ATR停損, ATR20):")
-    print(f"{'bo日':>5}{'atr':>5}{'交易':>6}{'勝率':>7}{'PF':>6}{'總$':>12}{'最大DD$':>11}{'MAR':>6}")
+    print(f"{'bo日':>5}{'atr':>5}{'交易':>6}{'勝率':>7}{'PF':>6}{'總$':>12}{'最大DD$':>11}{'報酬回撤比':>8}")
     for bo in (20, 30, 40, 55):
         for st in (2.5, 3.0, 4.0):
             m = metrics(backtest(dt, h, l, c, bo, st))
@@ -141,7 +141,7 @@ def main():
     tr = backtest(dt, h, l, c)
     m = metrics(tr)
     print(f"\n採用 bo{DBO}日/atr{DATR_STOP}/ATR{DATR_N}: 交易{m['n']} 勝率{m['win']:.1%} "
-          f"PF{m['pf']:.2f} 總${m['tot']:+,.0f} 最大DD${m['dd']:,.0f} MAR{m['mar']:.2f}")
+          f"PF{m['pf']:.2f} 總${m['tot']:+,.0f} 最大DD${m['dd']:,.0f} 報酬回撤比{m['mar']:.2f}")
     years = sorted(set(t["exit_date"][:4] for t in tr))
     py = {y: 0.0 for y in years}; ny = {y: 0 for y in years}
     for t in tr:

@@ -200,6 +200,8 @@ def metrics(trades):
     gp = w.sum(); gl = -ls.sum()
     eq = np.cumsum(p)
     dd = (np.maximum.accumulate(eq) - eq).max() if len(eq) else 0.0
+    # 注意: 'mar' 此處為『總損益 ÷ 最大回撤』(報酬/回撤比), 非業界年化 MAR(CAGR/MaxDD%);
+    # 顯示一律標『報酬/回撤比』避免與年化 MAR 混淆 (數值天生較大)。
     return {"n": len(trades), "win": len(w) / len(trades),
             "pf": gp / gl if gl > 0 else float("inf"),
             "total": p.sum(), "dd": dd,
@@ -231,7 +233,7 @@ def main():
     print(f"黃金順勢突破 (breakout={CONFIG['breakout']}, atr_stop={CONFIG['atr_stop']}, "
           f"allow_short={CONFIG['allow_short']})")
     print(f"交易 {m['n']}  勝率 {m['win']:.1%}  PF {m['pf']:.2f}  "
-          f"總損益 ${m['total']:+,.0f}  最大DD ${m['dd']:,.0f}  MAR {m['mar']:.2f}")
+          f"總損益 ${m['total']:+,.0f}  最大DD ${m['dd']:,.0f}  報酬/回撤比 {m['mar']:.2f}")
     print("\n逐年績效拆解 (不同行情下的表現分布):")
     for y, n, tot, win in yearly(trades):
         bar = "█" * int(abs(tot) / 3000)
