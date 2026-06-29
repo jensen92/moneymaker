@@ -190,6 +190,15 @@ def live_report():
             lines.append(s)
     except Exception:
         pass
+    # 波浪結構 (月/週/日定位 + 時線當下波浪 + 關鍵價位)
+    try:
+        import txf_wave
+        w = txf_wave.report()
+        if w:
+            lines.append("")
+            lines.append(w)
+    except Exception:
+        pass
     return "\n".join(lines)
 
 
