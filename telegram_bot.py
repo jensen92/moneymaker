@@ -1134,7 +1134,8 @@ HELP = (
     "/gold               黃金期貨順勢突破訊號 (小時K, 僅做多)\n"
     "/grain              穀物期貨個別季節進出場 (ZC/ZS/ZW, 含進場/停損/出場)\n"
     "/energy             能源季節做多 (NG天然氣/CL原油, 季節非趨勢)\n"
-    "/txf                台指期日內策略 (前日高低突破, 小時K)\n"
+    "/txf                台指日內策略 + 選擇權情緒 + 波浪結構\n"
+    "/wave               台指波浪結構 (月/週/日定位 + 時線波浪 + 關鍵價位)\n"
     "/refresh            更新股價歷史資料 (增量下載)\n"
     "/update             git pull 雲端最新策略並重啟\n"
     "/c <指令>           叫 Claude Code 依指令分析/優化/改程式碼 (例: /c 優化策略)\n"
@@ -1185,6 +1186,8 @@ def handle(chat_id, text):
         threading.Thread(target=gold_job, args=(chat_id,), daemon=True).start()
     elif cmd in ("grain", "grains"):
         threading.Thread(target=grain_sig_job, args=(chat_id,), daemon=True).start()
+    elif cmd in ("wave", "txfwave"):
+        threading.Thread(target=wave_job, args=(chat_id,), daemon=True).start()
     elif cmd in ("energy", "ng", "cl"):
         threading.Thread(target=energy_job, args=(chat_id,), daemon=True).start()
     elif cmd == "txf":
@@ -1301,6 +1304,18 @@ def grain_sig_job(chat_id):
     try:
         send(chat_id, "⏳ 更新穀物日線 + 計算個別季節訊號中...")
         out = run_script(["grain_signals.py"])
+        send(chat_id, out)
+    finally:
+        _job_lock.release()
+
+
+def wave_job(chat_id):
+    if not _job_lock.acquire(blocking=False):
+        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
+        return
+    try:
+        send(chat_id, "⏳ 抓台指多時間框架 + 計算波浪結構中...")
+        out = run_script(["txf_wave.py"])
         send(chat_id, out)
     finally:
         _job_lock.release()
