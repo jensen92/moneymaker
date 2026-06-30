@@ -304,7 +304,8 @@ def _analyze_stock(code, progress=None):
     from strategies import add_indicators, STRATEGIES
     from backtest import (DATA_DIR as BT_DATA_DIR,
                           load_regime_tiers, load_vol_scalars,
-                          RISK_PCT, INIT_CAPITAL, suggested_position)
+                          RISK_PCT, INIT_CAPITAL, suggested_position,
+                          effective_risk)
 
     # 1. 更新個股資料 + 大盤指數 _TWII (市況濾網需用最新指數, 不可只更新個股)
     note(f"⏳ {code}: 下載最新資料中...")
@@ -444,6 +445,8 @@ def _analyze_stock(code, progress=None):
     except Exception:  # noqa: BLE001
         tier_str = "(無法判斷)"
         tier, vsca = 2, 1.0
+    # 有效風險係數 = RISK_PCT × 市況乘數 × 波動標量 (與 run_sub/suggested_position 一致)
+    eff_risk = effective_risk(tier, vsca)
 
     # 7. 進出場參考 (與 run_sub 一致: 市況×波動有效風險 + minervini 25% 上限)
     signal_lines = []
