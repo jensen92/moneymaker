@@ -527,7 +527,33 @@ def _scan_all(progress=None, keys=None):
     for mod in ["strategies", "backtest"]:
         if mod in sys.modules:
             importlib.reload(sys.modules[mod])
-    from strategies import add_indicators, STRATEGIES, _d_features
+    from strategies import (add_indicators, STRATEGIES, _d_features,
+                            PA_CONFIG, PB_CONFIG, K_CONFIG, L_CONFIG, D_CONFIG)
+    _WCFG = {"PA": PA_CONFIG, "PB": PB_CONFIG, "K": K_CONFIG,
+             "L": L_CONFIG, "D": D_CONFIG}
+
+    def _eligible(feat, rk):
+        """回傳此候選『一旦突破+爆量即會觸發』的策略字母 (其餘站立門檻已全過)。
+        空 = RS 或 收縮 尚未達任何策略門檻 (還早)。"""
+        out = []
+        for k in keys:
+            cfg = _WCFG.get(k)
+            if cfg is None:
+                continue
+            if rk < cfg["rs_min"]:
+                continue
+            if not (feat["contraction"] < cfg["contraction"]):
+                continue
+            if not feat["vol_dryup"]:
+                continue
+            if cfg.get("prox_min") is not None and feat.get("prox_52wh", 0) < cfg["prox_min"]:
+                continue
+            if cfg.get("max_day_range") is not None and feat.get("day_range", 9.9) > cfg["max_day_range"]:
+                continue
+            if cfg.get("skip_months") and feat.get("month") in cfg["skip_months"]:
+                continue
+            out.append(k)
+        return out
     from backtest import (DATA_DIR as BT_DATA_DIR, load_regime_tiers,
                           load_vol_scalars, RISK_PCT, INIT_CAPITAL,
                           suggested_position)
@@ -608,12 +634,11 @@ def _scan_all(progress=None, keys=None):
                 if feat is not None and feat["contraction"] <= WATCH_CONTRACTION:
                     row = df.iloc[i]
                     prior_high20 = df["high"].iloc[i - 20: i].max()
-                    near_bo = row["close"] >= prior_high20 * 0.95
+                    gap = (row["close"] / prior_high20 - 1.0) if prior_high20 > 0 else -9.9
                     watch.append({
                         "code": c, "name": names.get(c, ""), "rs": rk,
-                        "contraction": feat["contraction"],
-                        "vol_surge": feat["vol_surge"],
-                        "breakout": feat["breakout"], "near_bo": near_bo,
+                        "vol_surge": feat["vol_surge"], "gap": gap,
+                        "elig": _eligible(feat, rk),
                     })
             continue
         sig = sigs[hit[0]]   # keys 已按嚴格度排序, 取最嚴者的停損/持有規則
@@ -630,19 +655,21 @@ def _scan_all(progress=None, keys=None):
 
     # 排序: 複合命中越多越優先, 再依 RS 由高到低
     matches.sort(key=lambda m: (-m["nhit"], -m["rs"]))
-    # 觀察名單: 接近突破者優先, 再依 RS 由高到低, 取前 8 檔
-    watch.sort(key=lambda w: (-int(w["near_bo"]), -w["rs"]))
+    # 觀察名單: 可觸發策略數多者優先, 再依「距突破越近」、RS 由高到低, 取前 8 檔
+    watch.sort(key=lambda w: (-len(w["elig"]), -w["gap"], -w["rs"]))
 
     def _watch_lines():
-        out = ["", "▍近觸發觀察名單 (RS>0.75 模板✅ 收縮未達)"]
+        out = ["", "▍近觸發觀察名單 (字母=突破+爆量即觸發的策略)"]
         if not watch:
             out.append("  (今日無近觸發候選)")
             return out
         for w in watch[:8]:
             nm = f" {w['name']}" if w["name"] else ""
+            tag = "/".join(w["elig"]) if w["elig"] else "—"
             out.append(
-                f"  {w['code']}{nm}  RS{w['rs']:.0%} 收縮{w['contraction']:.2f} "
-                f"量{w['vol_surge']:.1f}x 突破{'✅' if w['breakout'] else '❌'}")
+                f"  [{tag}] {w['code']}{nm}  RS{w['rs']:.0%} "
+                f"量{w['vol_surge']:.1f}x 距突破{w['gap']:+.1%}")
+        out.append("  ([—]=RS/收縮未達還早; 距突破≥0=已過樞軸僅差量能)")
         return out
 
     # 格式化
