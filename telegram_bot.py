@@ -1130,7 +1130,7 @@ HELP = (
     "/year [PA,PB,K,L,D]  本年度進出清單 + 績效摘要 (預設全部策略)\n"
     "/info               策略設計說明\n"
     "/picks              今日選股\n"
-    "/analyze 2330       個股分析 + 進出場價格\n"
+    "/ay 2330            個股分析 + 進出場價格 (原 /analyze)\n"
     "/backtest [C,D]     組合回測 (慢, 數分鐘)\n"
     "/chart              圖像化儀表板連結 (權益曲線/月損益/R分布)\n"
     "/futures [S]        穀物季節做多 (各穀物專屬窗, 低DD)\n"
@@ -1204,9 +1204,9 @@ def handle(chat_id, text):
         if "up to date" not in out.lower():
             send(chat_id, "♻️ 套用更新並重啟中...")
             _reexec()
-    elif cmd == "analyze":
+    elif cmd in ("ay", "analyze"):
         if not args:
-            send(chat_id, "用法: /analyze 2330")
+            send(chat_id, "用法: /ay 2330")
             return
         code = args[0].strip().upper()
         threading.Thread(target=analyze_job, args=(chat_id, code),

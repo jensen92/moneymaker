@@ -9,8 +9,9 @@ import numpy as np
 import pandas as pd
 
 from strategies import STRATEGIES, add_indicators
-from backtest import DATA_DIR, load_regime, INIT_CAPITAL, RISK_PCT, PICKS_PER_DAY
-from backtest import compute_rs_rank
+from backtest import (DATA_DIR, load_regime, INIT_CAPITAL, PICKS_PER_DAY,
+                      compute_rs_rank, suggested_position,
+                      load_regime_tiers, load_vol_scalars)
 
 # 與每日報告 (github_scan.py) / /scan 一致的策略輪動
 PICK_KEYS = ["PA", "PB", "K", "L", "D"]
@@ -20,7 +21,7 @@ def main():
     uni = os.path.join(DATA_DIR, "universe.json")
     if os.path.exists(uni):
         with open(uni) as f:
-            names = {s["code"]: s["name"] for s in json.load(f)}
+            names = {s["code"]: s.get("name", "") for s in json.load(f)}
     else:
         names = {}
 
@@ -61,6 +62,10 @@ def main():
     if not regime_ok:
         return
 
+    # 與 /scan /ay /run_sub 一致的部位口徑: 有效風險(市況×波動) + minervini 25% 上限
+    tier = load_regime_tiers().get(latest_date, 2)
+    vsca = load_vol_scalars().get(latest_date, 1.0)
+
     for key in PICK_KEYS:
         print(f"\n=== 策略 {key} 明日進場候選 (取前 {PICKS_PER_DAY}) ===")
         picks = sorted(candidates[key], reverse=True)[:PICKS_PER_DAY]
@@ -68,17 +73,12 @@ def main():
             print("(無訊號)")
             continue
         for score, code, df, s in picks:
-            row = df.iloc[-1]
-            ref_entry = row["close"]
-            stop_pct = s.get("stop_pct", 0.08)
-            stop = ref_entry * (1 - stop_pct)
-            risk_amt = INIT_CAPITAL * RISK_PCT
-            shares = int(risk_amt / (ref_entry - stop) / 1000) * 1000
-            if shares <= 0:
-                shares = int(risk_amt / (ref_entry - stop))
+            ref_entry = df["close"].iloc[-1]
+            pos = suggested_position(INIT_CAPITAL, ref_entry, s,
+                                     tier=tier, vol_scalar=vsca)
             print(f"{code} {names.get(code, '')}: 參考價 {ref_entry:.1f}, "
-                  f"停損 {stop:.1f} (-{stop_pct:.0%}), "
-                  f"建議 {shares} 股, 最長持有 {s['max_hold']} 日, "
+                  f"停損 {pos['stop']:.1f} (-{pos['stop_pct']:.0%}), "
+                  f"建議 {pos['shares']:,} 股, 最長持有 {s['max_hold']} 日, "
                   f"RS {score:.2f}")
 
 
