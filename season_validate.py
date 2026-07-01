@@ -1,6 +1,6 @@
 """季節交易策略有效性驗證 — 統計各商品逐年『報酬百分比』.
 
-對 grain_signals (黃豆/玉米/小麥) 與 energy_signals (天然氣/原油) 的季節窗,
+對 grain_signals (黃豆/玉米) 與 energy_signals (天然氣/原油) 的季節窗,
 逐年重放『進場價→出場價』的 % 報酬 (與策略同一進出邏輯: 進場月第一交易日買進,
 持有 N 月或觸 3×ATR 停損), 統計:
   勝率 (正報酬年占比) / 平均年報酬 / 中位 / 最佳最差 / 平均÷標準差 / 樣本內外對切。
@@ -58,7 +58,7 @@ def report(name, rows):
 def main():
     print("季節交易有效性驗證 — 逐年報酬% (判定: 勝率≥50% 且 中位>0 = ✅有效)")
     summ = []
-    for key in ("ZS", "ZC", "ZW"):
+    for key in ("ZS", "ZC"):
         cfg = g.CONFIG[key]
         summ.append(report(f"穀物 {cfg['name']} ({cfg['month']}月進/持{cfg['hold_mo']}月)",
                             yearly_pct(g, key)))
