@@ -10,8 +10,8 @@
 
 指令 (亦可用 /menu 叫出按鈕選單, 點一下直接執行):
     /menu               叫出按鈕選單
-    /scan               全市場掃描 PA/PB/K/L/D 清單 + 進出場點位
-    /year [PA,PB,K,L,D]  本年度進出清單 (已平倉交易 + 績效摘要, 預設全部策略)
+    /scan               全市場掃描 K/D 清單 + 進出場點位
+    /year [K,D]          本年度進出清單 (已平倉交易 + 績效摘要, 預設全部策略)
     /info               策略設計說明
     /picks              今日選股
     /analyze 2330       分析個股現況 + 進出場價格 (自動更新資料)
@@ -86,7 +86,7 @@ API = f"https://api.telegram.org/bot{TOKEN}"
 YF_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
 
 # 與每日報告 (github_scan.py) 一致的掃描策略組合
-SCAN_KEYS = ["PA", "PB", "K", "L", "D"]
+SCAN_KEYS = ["K", "D"]
 
 _job_lock = threading.Lock()
 
@@ -290,7 +290,7 @@ def _update_stock_data(code):
 
 
 def _analyze_stock(code, progress=None):
-    """下載最新資料, 用策略 PA/PB/K/L/D 分析現況, 回傳文字報告.
+    """下載最新資料, 用策略 K/D 分析現況, 回傳文字報告.
 
     progress: 可選 callback(text), 用於即時回報掃描進度.
     """
@@ -520,7 +520,7 @@ def analyze_job(chat_id, code):
 def _scan_all(progress=None, keys=None):
     """掃全市場, 回傳符合 keys 任一策略的清單 (標注複合命中 + 進出場點位).
 
-    keys 預設 = SCAN_KEYS (PA/PB/K/L/D), 與每日報告一致.
+    keys 預設 = SCAN_KEYS (K/D), 與每日報告一致.
     """
     keys = keys or SCAN_KEYS
 
@@ -537,10 +537,8 @@ def _scan_all(progress=None, keys=None):
     for mod in ["strategies", "backtest"]:
         if mod in sys.modules:
             importlib.reload(sys.modules[mod])
-    from strategies import (add_indicators, STRATEGIES, _d_features,
-                            PA_CONFIG, PB_CONFIG, K_CONFIG, L_CONFIG, D_CONFIG)
-    _WCFG = {"PA": PA_CONFIG, "PB": PB_CONFIG, "K": K_CONFIG,
-             "L": L_CONFIG, "D": D_CONFIG}
+    from strategies import add_indicators, STRATEGIES, _d_features, K_CONFIG, D_CONFIG
+    _WCFG = {"K": K_CONFIG, "D": D_CONFIG}
 
     def _eligible(feat, rk):
         """回傳此候選『一旦突破+爆量即會觸發』的策略字母 (其餘站立門檻已全過)。
@@ -927,7 +925,7 @@ def _year_trades_live(keys, progress=None):
     return rows, year
 
 
-def _year_trades(keys=("PA", "PB", "K", "L", "D"), progress=None):
+def _year_trades(keys=("K", "D"), progress=None):
     """本年度已平倉交易清單 + 績效。優先讀 sim_log.py 每日盤後寫入的凍結紀錄檔
     (picks/year_log_<year>.csv); 若該檔尚不存在 (例如 cron 還沒跑過今天, 或查詢
     去年以前的資料) 才即時重跑回測當備援。"""
@@ -939,7 +937,7 @@ def _year_trades(keys=("PA", "PB", "K", "L", "D"), progress=None):
     return _format_year_rows(rows, year, keys, frozen=False)
 
 
-def year_job(chat_id, strats="PA,PB,K,L,D"):
+def year_job(chat_id, strats="K,D"):
     """本年度進出清單: 同樣需先同步資料到最新交易日才能準確算出近期是否進出場
     (先前漏了這一步, 補上與 /scan /picks 一致的 refresh 流程)。"""
     keys = [k.strip().upper() for k in strats.split(",") if k.strip()]
@@ -1183,8 +1181,8 @@ def scheduler_loop():
 HELP = (
     "📈 策略機器人指令 (或輸入 /menu 用按鈕):\n"
     "/menu               叫出按鈕選單\n"
-    "/scan               全市場掃描 PA/PB/K/L/D 清單 + 進出場點位\n"
-    "/year [PA,PB,K,L,D]  本年度進出清單 + 績效摘要 (預設全部策略)\n"
+    "/scan               全市場掃描 K/D 清單 + 進出場點位\n"
+    "/year [K,D]          本年度進出清單 + 績效摘要 (預設全部策略)\n"
     "/info               策略設計說明\n"
     "/picks              今日選股\n"
     "/ay 2330            個股分析 + 進出場價格 (原 /analyze)\n"

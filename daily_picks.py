@@ -1,4 +1,4 @@
-"""每日選股: 以最新資料對全部股票跑策略 PA/PB/K/L/D (現行輪動), 各輸出最多 2 檔.
+"""每日選股: 以最新資料對全部股票跑策略 K/D (現行輪動), 各輸出最多 2 檔.
 
 使用方式: 先跑 download_data.py 更新資料, 再跑本腳本.
 """
@@ -14,7 +14,7 @@ from backtest import (DATA_DIR, load_regime, INIT_CAPITAL, PICKS_PER_DAY,
                       load_regime_tiers, load_vol_scalars)
 
 # 與每日報告 (github_scan.py) / /scan 一致的策略輪動
-PICK_KEYS = ["PA", "PB", "K", "L", "D"]
+PICK_KEYS = ["K", "D"]
 
 
 def main():
