@@ -48,6 +48,8 @@ def fetch_all(path=CACHE):
         daily = _fetch("10y", "1d")
     except Exception:
         return None
+    if not hourly or not daily:   # API 回傳異常空資料 — 絕不可覆寫掉既有快取
+        return None
     data = {"時": hourly, "日": daily,
             "週": _resample(daily, 7), "月": _resample(daily, 30)}
     try:
