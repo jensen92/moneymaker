@@ -826,14 +826,34 @@ def _format_year_rows(rows, year, keys, frozen):
     if not rows:
         return (f"📈 {year} 年進出清單 (策略 {'/'.join(keys)})\n\n"
                 f"本年度尚無已平倉交易 (持倉中部位請用 /scan 查看)")
+    src = "盤後逐日紀錄 (凍結)" if frozen else "即時回測 (尚無逐日紀錄, 備援重算)"
+    lines = [f"📈 {year} 年進出清單 (策略 {'/'.join(keys)})　[{src}]", ""]
+
+    # 分策略績效: 同一檔股票可能同時被多個策略篩出 (各策略門檻/停損/持有規則
+    # 不同, 是各自獨立的子帳戶), 混在一起算總勝率/均R 會失真, 故先逐策略計算。
+    by_strat = {}
+    for r in rows:
+        by_strat.setdefault(r["strategy"], []).append(r)
+    lines.append("── 各策略績效 (分開計算) ──")
+    for k in keys:
+        srows = by_strat.get(k, [])
+        if not srows:
+            lines.append(f"  {k}: 本年無交易")
+            continue
+        s_pnl = sum(float(r["pnl"]) for r in srows)
+        s_r = sum(float(r["r"]) for r in srows)
+        s_wins = sum(1 for r in srows if float(r["pnl"]) > 0)
+        lines.append(f"  {k}: {len(srows)}筆  勝率{s_wins/len(srows):.0%}  "
+                     f"均R{s_r/len(srows):+.2f}  總R{s_r:+.1f}  損益{s_pnl:+,.0f}")
+    lines.append("")
+
     total_pnl = sum(float(r["pnl"]) for r in rows)
     total_r = sum(float(r["r"]) for r in rows)
     wins = [r for r in rows if float(r["pnl"]) > 0]
     win_rate = len(wins) / len(rows)
     avg_r = total_r / len(rows)
-    src = "盤後逐日紀錄 (凍結)" if frozen else "即時回測 (尚無逐日紀錄, 備援重算)"
-    lines = [
-        f"📈 {year} 年進出清單 (策略 {'/'.join(keys)})　[{src}]",
+    lines += [
+        "── 全部策略合計 (僅供總覽, 各策略為獨立子帳戶不應直接比較) ──",
         f"已平倉 {len(rows)} 筆  勝率 {win_rate:.0%}  均R {avg_r:+.2f}",
         f"總R {total_r:+.1f}  已實現損益 {total_pnl:+,.0f} 元",
         "(每筆風險固定 1% 本金; 賣半鎖利會列為獨立一筆)",
