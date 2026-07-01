@@ -50,6 +50,11 @@ def fetch_gc_hourly(path=gs.CSV):
                     continue
                 rows.append((stamp, round(o, 2), round(h, 2), round(l, 2),
                              round(c, 2), int(v) if v else 0))
+            if not rows:      # API 回傳異常空資料 — 絕不可覆寫掉既有歷史
+                if attempt == 2:
+                    return False
+                time.sleep(2 ** attempt)
+                continue
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", newline="") as f:
                 w = csv.writer(f)

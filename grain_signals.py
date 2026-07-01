@@ -55,6 +55,9 @@ def fetch_grains():
                 rows.append((time.strftime("%Y-%m-%d", time.gmtime(t)),
                              round(o, 2), round(h, 2), round(l, 2), round(c, 2),
                              int(q["volume"][i] or 0)))
+            if not rows:      # API 回傳異常空資料 — 絕不可覆寫掉既有歷史
+                ok = False
+                continue
             with open(_path(key), "w", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(["date", "open", "high", "low", "close", "volume"])
