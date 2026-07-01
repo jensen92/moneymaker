@@ -1,11 +1,10 @@
-"""穀物期貨『個別』季節進出場 — 玉米 ZC / 黃豆 ZS / 小麥 ZW 各自做多.
+"""穀物期貨『個別』季節進出場 — 黃豆 ZS / 玉米 ZC 各自做多.
 
 策略思維: 穀物是均值回歸+強季節商品, 單邊『趨勢跟隨』在其上 EV 很弱
-(26年實測 玉米 +0.05R、小麥 -0.06R, 僅黃豆 +0.43R), 但各自的『作物行事曆季節』
+(26年實測趨勢跟隨EV弱), 但各自的『作物行事曆季節』
 有結構性 edge。故個別進出場採各穀物專屬季節窗 (收割低點進、季節強勢段出):
   黃豆 ZS  10 月初進 (北美收割低點→南美天候+隔年春), 持有 ~5 月
   玉米 ZC  12 月初進 (12 月季節最強), 持有 ~3 月
-  小麥 ZW  12 月初進 (季節性最弱, 僅勉強正期望), 持有 ~3 月
 窗口為作物行事曆常識 + 26 年樣本內外對切驗證, 非網格挑選。3×ATR 寬停損防黑天鵝。
 EV/績效隨資料動態重算。一年一次, 單獨報酬低, 價值在分散。
 
@@ -26,7 +25,6 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
 CONFIG = {
     "ZS": {"month": 10, "hold_mo": 5, "stop_atr": 3.0, "pv": 50.0, "name": "黃豆 ZS"},
     "ZC": {"month": 12, "hold_mo": 3, "stop_atr": 3.0, "pv": 50.0, "name": "玉米 ZC"},
-    "ZW": {"month": 12, "hold_mo": 3, "stop_atr": 3.0, "pv": 50.0, "name": "小麥 ZW (弱)"},
 }
 
 
@@ -35,11 +33,11 @@ def _path(key):
 
 
 def fetch_grains():
-    """抓 ZS=F / ZC=F / ZW=F 日線 (2000 年至今), 覆寫 futures_data/{key}.csv。"""
+    """抓 ZS=F / ZC=F 日線 (2000 年至今), 覆寫 futures_data/{key}.csv。"""
     import requests
     p1 = 946684800
     ok = True
-    for key, sym in (("ZS", "ZS=F"), ("ZC", "ZC=F"), ("ZW", "ZW=F")):
+    for key, sym in (("ZS", "ZS=F"), ("ZC", "ZC=F")):
         try:
             r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}",
                              params={"period1": p1, "period2": int(time.time()),
@@ -166,8 +164,8 @@ def main():
     if not args.no_fetch:
         fetch_grains()
 
-    print("🌾 穀物期貨個別季節進出場（ZC/ZS/ZW, 各自做多）")
-    for key in ("ZS", "ZC", "ZW"):
+    print("🌾 穀物期貨個別季節進出場（黃豆/玉米, 各自做多）")
+    for key in ("ZS", "ZC"):
         s = _state(key); m = metrics(backtest(key))
         print(f"\n{s['name']}  現價 {s['price']:,.1f}｜ATR {s['atr']:.1f}"
               f"｜季節窗 {s['entry_m']}月進→{s['exit_m']}月出")
@@ -182,7 +180,7 @@ def main():
         if m:
             print(f"  EV/筆 {m['ev']:+.2f}R｜勝率 {m['win']:.0%}｜賺賠 {m['payoff']:.2f}｜"
                   f"報酬/回撤比 {m['mar']:.1f}（{m['n']}年）")
-    print("\n(穀物=季節非趨勢; 各商品一年一次, 單獨報酬低, 價值在分散; 小麥最弱)")
+    print("\n(穀物=季節非趨勢; 各商品一年一次, 單獨報酬低, 價值在分散; 小麥因逐年驗證不通過已移除)")
 
 
 if __name__ == "__main__":

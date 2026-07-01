@@ -154,10 +154,11 @@ def signal_b(df, i):
 #   小麥季節性最弱 (固定持有單獨 PF1.68 且不穩), 個別進出場見 grain_signals.py。
 # 註: 舊版單一 12 月進場對黃豆錯置 (黃豆 10 月才是收割低點)。窗口為作物常識+對切驗證,
 #     非網格挑選 (hold 用整數月, 避免實盤失真)。
+# 小麥(ZW)經逐年%驗證不通過 (勝率38%、中位-3.4%, 正報酬僅靠2021單一離群年撐起),
+# 已移除, 季節僅保留黃豆、玉米。
 S_SEASON = {
     "ZS": {"month": 10, "hold": 105, "stop": 3.0},   # 黃豆
     "ZC": {"month": 12, "hold": 63,  "stop": 3.0},   # 玉米
-    "ZW": {"month": 12, "hold": 63,  "stop": 3.0},   # 小麥 (弱, 宜走價差)
 }
 
 
@@ -169,7 +170,9 @@ def signal_s(df, i):
     DD 由 7~12% 降至 1~3%, 且樣本內外皆穩 (見 S_SEASON 註記)。
     """
     market = df["market"].iloc[i] if "market" in df.columns else None
-    c = S_SEASON.get(market, CONFIG["S"])
+    c = S_SEASON.get(market)
+    if c is None:            # 僅交易 S_SEASON 白名單內的穀物 (黃豆/玉米), 其餘不做
+        return None
     row, prev = df.iloc[i], df.iloc[i - 1]
     if np.isnan(row["atr20"]) or row["atr20"] <= 0:
         return None
