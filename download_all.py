@@ -164,6 +164,10 @@ def verify_and_fill(codes, twse_today, tol=0.005, max_gap_days=5):
         if not os.path.exists(path):
             continue
         d_official, o, h, l, c, v = official
+        # 官方收盤價無效 (停牌/當日無成交, API 回傳 0 或負) → 無法比對, 也不可
+        # 用 0 價補入本地 (會汙染還原股價序列與指標), 整檔略過。
+        if not c or c <= 0:
+            continue
         line = _last_line(path)
         if not line:
             continue
