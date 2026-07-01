@@ -243,7 +243,8 @@ def _fetch_yf(code, range_="1y"):
 
 
 def _update_stock_data(code):
-    """下載/更新個股 CSV (只補新資料)。回傳 (csv_path, msg)."""
+    """下載/更新個股 CSV (補新資料; 同一天若價格已變動則直接取代, 確保 /ay
+    盤中重複查詢反映最新即時價, 而非停在首次快照)。回傳 (csv_path, msg)."""
     if not DATA_DIR:
         return None, "未設定 MM_DATA_DIR"
     path = os.path.join(DATA_DIR, f"{code}.csv")
@@ -263,7 +264,8 @@ def _update_stock_data(code):
         return path if os.path.exists(path) else None, "下載失敗, 使用舊資料"
 
     new_rows = [r for r in rows if r[0] > last_date]
-    if not new_rows:
+    same_day = [r for r in rows if last_date and r[0] == last_date]
+    if not new_rows and not same_day:
         return path, "資料已是最新"
 
     if not last_date:
@@ -274,9 +276,16 @@ def _update_stock_data(code):
             w.writerows(new_rows)
         msg = f"新建 {len(new_rows)} 筆"
     else:
-        with open(path, "a", newline="") as f:
-            csv.writer(f).writerows(new_rows)
-        msg = f"補 {len(new_rows)} 筆新資料"
+        parts = []
+        if same_day:
+            from download_all import _replace_last_row
+            _replace_last_row(path, same_day[-1])
+            parts.append("更新今日即時價")
+        if new_rows:
+            with open(path, "a", newline="") as f:
+                csv.writer(f).writerows(new_rows)
+            parts.append(f"補 {len(new_rows)} 筆新資料")
+        msg = "、".join(parts)
     return path, msg
 
 

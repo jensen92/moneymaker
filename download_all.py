@@ -76,6 +76,30 @@ def _last_date(path):
     return line.split(",")[0] if line else ""
 
 
+def _replace_last_row(path, row):
+    """就地取代 CSV 最後一行 (同一天盤中價格更新用), 避免整檔重寫。
+
+    找到最後一行的起始位置後截斷檔案、寫入新的一行 (含結尾換行)。以倍增讀取
+    區塊確保能找到前一行的換行位置 (最壞情況讀整檔, 對這類短行 CSV 極罕見)。
+    """
+    with open(path, "rb+") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        chunk = min(size, 1000)
+        idx = -1
+        while True:
+            f.seek(size - chunk)
+            body = f.read(chunk).rstrip(b"\n")
+            idx = body.rfind(b"\n")
+            if idx != -1 or chunk >= size:
+                break
+            chunk = min(size, chunk * 4)
+        start = size - chunk + (idx + 1 if idx != -1 else 0)
+        f.seek(start)
+        f.truncate()
+        f.write((",".join(str(x) for x in row) + "\n").encode())
+
+
 def _roc_to_iso(roc_date):
     """台灣官方民國日期 '1150618' -> ISO '2026-06-18'."""
     s = str(roc_date)
@@ -199,12 +223,16 @@ def task(stock, cutoff):
     path = os.path.join(DATA_ADJ, f"{code}.csv")
     suffixes = [".TW", ".TWO"] if market == "TWSE" else [".TWO", ".TW"]
 
-    # 判斷是否需要更新: cutoff = 該股官方最新交易日, 本地已到此日才跳過。
-    # 改用「每股各自的官方最新日期」而非「今天-2」估計, 也避免上市/上櫃
-    # 兩市場交易日不同步時, 用單一全市場日期誤判某一邊永遠落後。
+    # 判斷是否需要更新。cutoff = 該股「官方已確認公布」的最新收盤交易日 (來自
+    # TWSE/TPEx OpenAPI); 官方資料在收盤前 (盤中) 尚未發布今日這筆, 此時 cutoff
+    # 仍停在前一交易日。過去只比較 last>=cutoff 會導致「本地已有昨日資料」時
+    # 於盤中誤判為已最新而整天略過抓取, 使 /scan /picks /ay 等互動查詢在盤中
+    # 一直停留在昨日收盤價、抓不到即時價。改為: 只有『官方今日收盤已確認公布
+    # (cutoff 已推進到今天)』且本地也已同步時才略過, 盤中一律照抓確保即時。
     last = _last_date(path) if os.path.exists(path) else ""
-    if cutoff and last >= cutoff:
-        return code, "skip"   # 資料已到該股最新交易日
+    today = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d")
+    if cutoff and last >= cutoff and cutoff >= today:
+        return code, "skip"   # 官方今日收盤已確認且本地已同步, 無需再抓
 
     incremental = bool(last)  # 有舊檔 → 只補新資料
     range_ = INC_RANGE if incremental else FULL_RANGE
@@ -217,10 +245,18 @@ def task(stock, cutoff):
                     break
                 if incremental:
                     new_rows = [r for r in rows if r[0] > last]
+                    # 同一天(last當日)若價格已變動(盤中即時價), 取代最後一行
+                    # 而非略過, 讓重複呼叫也能反映最新價格, 而非停在首次快照。
+                    same_day = [r for r in rows if r[0] == last]
+                    changed = False
+                    if same_day:
+                        _replace_last_row(path, same_day[-1])
+                        changed = True
                     if new_rows:
                         with open(path, "a", newline="") as f:
                             csv.writer(f).writerows(new_rows)
-                    return code, True
+                        changed = True
+                    return code, (True if changed else "skip")
                 else:
                     if len(rows) >= 60:
                         with open(path, "w", newline="") as f:
