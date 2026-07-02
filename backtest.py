@@ -217,6 +217,8 @@ def suggested_position(equity, entry, sig, tier=2, vol_scalar=1.0, lot=1000):
         shares = max(1, int(risk_amt / risk_per_sh))
     if sig.get("minervini"):
         cap = int(equity * 0.25 / entry / lot) * lot   # 單檔上限 25% 權益
+        if cap <= 0:
+            cap = int(equity * 0.25 / entry)           # 高價股改零股精度 (同 run_sub)
         shares = min(shares, max(cap, 1))
     out["shares"] = shares
     return out
@@ -529,6 +531,11 @@ def run_sub(data, entry_map, strategy_key, leverage, init_eq,
                     full_shares = max(1, int(risk_amt / risk_per_sh))
                 if s.get("minervini"):
                     cap = int(equity * 0.25 / entry / 1000) * 1000
+                    if cap <= 0:
+                        # 高價股 (>equity/4000 元) 湊整張為 0 → 改用零股精度,
+                        # 否則會被 max(cap,1) 壓成 1 股, 使高價強勢股的贏家
+                        # 部位形同虛設 (R 正常但損益近零, 總R 與總損益脫鉤)
+                        cap = int(equity * 0.25 / entry)
                     full_shares = min(full_shares, max(cap, 1))
                 if s.get("pyramid"):
                     init_shares = max(1, full_shares // 4)
