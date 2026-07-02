@@ -152,31 +152,39 @@ def main():
     print(f"部位 {pos_txt}")
 
     # ── 訊號區 ──
+    holding = pos_txt.startswith("持有")
     sig = gs.signal_breakout(h, l, c, i, cfg, a)
     if sig == 1:
         stop = bar_close - stop_mult * atr_now
         print(f"\n🟢 確認進場（做多）")
         print(f"進場 {bar_close:,.1f}｜停損 {stop:,.1f}（{risk(bar_close, stop)}）")
-        print("停利 無 · ATR移動停損鎖利, 跌破即出")
+        print(f"👉 操作: {'已持有→續抱, 停損單依通知上移' if holding else f'立即市價買進, 掛停損賣單 {stop:,.1f}'}")
+        print("   之後每小時收盤停損只升不降(背景通知), 跌破即市價平倉")
     elif sig == -1:
         stop = bar_close + stop_mult * atr_now
         print(f"\n🔴 確認進場（做空）")
         print(f"進場 {bar_close:,.1f}｜停損 {stop:,.1f}（{risk(bar_close, stop)}）")
-        print("停利 無 · ATR移動停損鎖利, 突破即出")
+        print("👉 操作: 立即市價賣出, 掛停損買單; 突破停損即平倉")
     elif live > next_level:
         stop = live - stop_mult * atr_now
         print(f"\n🟡 即時突破中（待本小時收盤確認）")
         print(f"進場(預估) {live:,.1f}｜停損(預估) {stop:,.1f}（{risk(live, stop)}）")
-        print("停利 無 · ATR移動停損；收在門檻上即確認")
+        print(f"👉 操作: 先別進場。等本小時收盤站上 {next_level:,.1f} 才買(會另發🟢確認通知);")
+        print("   可先備妥委託, 假突破(收回門檻下)則取消")
     else:
         stop = next_level - stop_mult * atr_now
         print(f"\n⚪ 無進場訊號")
         print(f"進場 突破 {next_level:,.1f} 做多｜停損(預估) {stop:,.1f}（{risk(next_level, stop)}）")
-        print("停利 無 · ATR移動停損鎖利")
+        if holding:
+            print(f"👉 操作: 持有中→續抱。{pos_txt.replace('持有多單 ', '')}, 停損單掛好即可")
+        else:
+            print("👉 操作: 無需動作。想提前可掛突破買單於門檻價(觸價才成交), 否則等🟢通知")
 
     # ── 績效 ──
     print(f"\n績效 {m['n']}筆｜PF {m['pf']:.2f}｜勝率 {m['win']:.0%}｜DD ${m['dd']/1000:.0f}k｜報酬/回撤比 {m['mar']:.1f}")
     print(f"逐年 {gs.yearly_line(trades)}")
+    print("💡 概念: 小時收盤突破過去24H高=動能點火才進場; 不猜頭不猜底, 停損跟著漲勢")
+    print("   上移鎖利, 跌破停損=動能結束即出。訊號以收盤確認, 盤中假突破不算")
 
 
 if __name__ == "__main__":
