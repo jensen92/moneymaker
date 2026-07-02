@@ -26,3 +26,4 @@ web_cache/
 fundamentals/
 gold_state.json
 grain_state.json
+optimize_kd_results.csv
