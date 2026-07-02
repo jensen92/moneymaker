@@ -1115,7 +1115,13 @@ def signal_b(df, i, rs_rank=None):
 #                     561筆 PF1.86 CAGR6.6% MaxDD4.6% 勝率55% MAR1.44  ← 全網格最低回撤
 #   (更寬的 12% 停損 + 維持 B 的 prox0.85, 換取最小回撤與最高勝率, 最穩健的曲線)
 # 兩者皆在 PF / MaxDD / 勝率 / MAR 四項同時優於 B, 僅 CAGR 較低 (回撤砍半的必然取捨)。
-K_CONFIG = {**B_CONFIG, "vol_mult": 2.0, "gain_cap": 0.06, "stop_pct": 0.10, "prox_min": 0.80}
+# v8 (修正高價股1股部位bug後, optimize_kd.py 全量重掃): stop_pct 0.10→0.08 —
+#   逐軸消融中唯一 IS(≤2019)/OOS(≥2020) 雙改善的軸: IS均R 0.83→0.99,
+#   OOS均R 0.99→1.23, 15年損益 +402萬→+558萬(+38%), 總R 524→651;
+#   代價 DD 5.1%→9.1% (仍低於D的8.2%量級)。停損軸 0.08/0.10/0.12 平滑單調非尖峰。
+#   其餘軸 (rs/contraction/gain/vol/prox) 現行值皆在平台中心, 鄰域劣化, 不動;
+#   D 逐軸消融無任何 IS+OOS 雙改善軸, 維持現行。
+K_CONFIG = {**B_CONFIG, "vol_mult": 2.0, "gain_cap": 0.06, "stop_pct": 0.08, "prox_min": 0.80}
 L_CONFIG = {**B_CONFIG, "vol_mult": 2.0, "gain_cap": 0.06, "stop_pct": 0.12}
 
 
