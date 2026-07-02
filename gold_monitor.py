@@ -52,6 +52,7 @@ def _load_state():
                 s = json.load(f)
                 s.setdefault("last_bar", None)
                 s.setdefault("alerted_level", None)
+                s.setdefault("notified_trail", s.get("trail"))
                 return s
         except Exception:
             pass
@@ -133,10 +134,12 @@ def check_live():
             state = {"pos": 1, "entry": bar_close, "trail": stop,
                      "last_bar": bar_ts, "alerted_level": None}
             rk = f"風險{bar_close - stop:.0f}點/${(bar_close - stop) * gs.POINT_VALUE:,.0f}口"
+            state["notified_trail"] = stop
             alert = (
                 f"🟢 黃金確認進場（做多） {bar_ts[5:]} 台北\n"
                 f"進場 {bar_close:,.1f}｜停損 {stop:,.1f}（{rk}）\n"
-                f"停利 無 · ATR移動停損鎖利, 跌破即出\n{_PERF}"
+                f"👉 操作: 立即市價買進1口, 同時掛停損賣單 {stop:,.1f}\n"
+                f"之後收到🔼通知就把停損單上移(只升不降), ⛔通知即平倉\n{_PERF}"
             )
         elif cfg["allow_short"] and sig == -1:
             stop = bar_close + cfg["atr_stop"] * atr_now
@@ -158,7 +161,7 @@ def check_live():
                 f"🟡 黃金即時突破預警（待本小時收盤確認）\n"
                 f"即時 {price:,.1f} 已越門檻 {up_level:,.1f}\n"
                 f"進場(預估) {price:,.1f}｜停損(預估) {stop:,.1f}（{rk}）\n"
-                f"收在門檻上即確認做多, 可提前備單"
+                f"👉 操作: 先別進場, 備妥委託即可; 收盤站上門檻會發🟢確認通知再買"
             )
         else:
             state["last_bar"] = bar_ts
@@ -171,10 +174,20 @@ def check_live():
             alert = (
                 f"⛔ 黃金多單停損出場\n"
                 f"進場 {state['entry']:,.1f} → 出場 {price:,.1f}（停損 {state['trail']:,.1f}）\n"
-                f"損益 ${pnl:+,.0f}/口（未計滑價手續費）"
+                f"損益 ${pnl:+,.0f}/口（未計滑價手續費）\n"
+                f"👉 操作: 立即市價平倉、取消原停損單。空手等下一次🟢訊號"
             )
             state = {"pos": 0, "entry": None, "trail": None,
                      "last_bar": bar_ts, "alerted_level": None}
+        elif state["trail"] > state.get("notified_trail", state["trail"]) + 0.3 * atr_now:
+            # 移動停損有感上移 (>0.3×ATR) → 通知上移停損單, 否則實單停損永遠停在初始價
+            locked = (state["trail"] - state["entry"]) * gs.POINT_VALUE
+            alert = (
+                f"🔼 黃金停損上移 {state.get('notified_trail', 0):,.1f} → {state['trail']:,.1f}\n"
+                f"👉 操作: 把停損賣單改到 {state['trail']:,.1f}"
+                f"（已鎖{'利潤' if locked >= 0 else '風險'} ${locked:+,.0f}/口）, 其餘不動"
+            )
+            state["notified_trail"] = state["trail"]
     elif state["pos"] == -1:
         if new_bar:
             state["trail"] = min(state["trail"], bar_close + cfg["atr_stop"] * atr_now)
