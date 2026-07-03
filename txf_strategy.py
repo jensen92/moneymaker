@@ -9,7 +9,7 @@
 策略規則 (一天最多一筆, 同日先觸發者為準):
   進場: 盤中(小時K)向上突破「前一交易日最高」→ 做多 (停損買進於前日高,
         若跳空高開則以開盤價成交); 向下跌破「前一交易日最低」→ 做空。
-  停損: 進場價 ± 40 點。
+  停損: 動態 = max(40, 0.5×前日區間) 點 (隨波動縮放, 見 dynamic_stop)。
   出場: 當日 13:30 收盤平倉 (未觸停損時)。
   方向: 多空皆做。
 
@@ -35,15 +35,26 @@ Finance 對 ^TWII 也沒有夜盤資料可抓。若要將夜盤納入策略 (例
 import os
 from collections import defaultdict
 
-STOP_PT = 40          # 停損點數
+STOP_PT = 40           # 停損點數下限 (floor)
+STOP_RANGE_MULT = 0.5  # 動態停損 = max(STOP_PT, 0.5×前日區間) — 隨波動縮放
+#   驗證(726交易日, 2023-07~2026-07): 固定40點在指數由17k漲到45k後失效
+#   (近3月勝率僅18%, 幾乎筆筆停損); 改0.5×前日區間後 全期+15,341→+19,583點,
+#   近3月+4,939→+8,449點、勝率18%→56%, 前/後半皆改善; 0.35×亦改善(平台非尖峰)。
+
+
+def dynamic_stop(prev_high, prev_low):
+    """動態停損點數 = max(下限40, 0.5×前日區間)。口數由 position_plan 依此自動調整。"""
+    return max(STOP_PT, round((prev_high - prev_low) * STOP_RANGE_MULT))
 POINT_VALUE = 200.0   # 大台 NT$/點 (小台 MXF 為 50)
 RISK_PCT = 0.01        # 每筆風險佔帳戶權益比例 (起始口數用)
 PYRAMID_STEP_PT = 40   # 順勢推進多少點加碼 1 口 (預設等於停損距離)
 MAX_UNITS = 3          # 最多加碼到幾口
 
 
-def make_plan(prev_high, prev_low, stop_pt=STOP_PT):
-    """回傳當日掛單計畫 (尚未觸發時的雙邊突破單)。"""
+def make_plan(prev_high, prev_low, stop_pt=None):
+    """回傳當日掛單計畫 (尚未觸發時的雙邊突破單)。stop_pt 預設用動態停損。"""
+    if stop_pt is None:
+        stop_pt = dynamic_stop(prev_high, prev_low)
     return {
         "long": {"trigger": prev_high, "stop": prev_high - stop_pt,
                  "exit": "13:30 收盤", "desc": f"突破前日高 {prev_high:.0f} 做多"},
@@ -84,12 +95,14 @@ def position_plan(equity, side, entry, stop_pt=STOP_PT, risk_pct=RISK_PCT,
     }
 
 
-def evaluate_day(bars, prev_high, prev_low, stop_pt=STOP_PT):
+def evaluate_day(bars, prev_high, prev_low, stop_pt=None):
     """給定當日小時 K (list of dict o/h/l/c) 與前日高低, 回傳已觸發的交易或 None。
 
     回傳 dict: side(+1/-1), entry, stop, exit, status('open'/'stopped'/'closed'), pnl_pt。
-    若當日尚未結束 (bars 不足 5 根) 仍會回報目前狀態。
+    若當日尚未結束 (bars 不足 5 根) 仍會回報目前狀態。stop_pt 預設動態停損。
     """
+    if stop_pt is None:
+        stop_pt = dynamic_stop(prev_high, prev_low)
     for i, b in enumerate(bars):
         if b["h"] >= prev_high:          # 多方突破
             entry = max(b["o"], prev_high)
@@ -106,17 +119,17 @@ def _resolve(bars, i, side, entry, stop):
     for j in range(i, len(bars)):
         b = bars[j]
         if side > 0 and b["l"] <= stop:
-            return _mk(side, entry, stop, "stopped", side * (stop - entry))
+            return _mk(side, entry, stop, stop, "stopped", side * (stop - entry))
         if side < 0 and b["h"] >= stop:
-            return _mk(side, entry, stop, "stopped", side * (stop - entry))
+            return _mk(side, entry, stop, stop, "stopped", side * (stop - entry))
     last = bars[-1]["c"]
     status = "closed" if len(bars) >= 5 else "open"
-    return _mk(side, entry, last, status, side * (last - entry))
+    return _mk(side, entry, last, stop, status, side * (last - entry))
 
 
-def _mk(side, entry, exit_, status, pnl_pt):
+def _mk(side, entry, exit_, stop, status, pnl_pt):
     return {"side": side, "dir": "多" if side > 0 else "空", "entry": entry,
-            "exit": exit_, "stop": entry - side * STOP_PT, "status": status,
+            "exit": exit_, "stop": stop, "status": status,
             "pnl_pt": pnl_pt, "pnl_nt": pnl_pt * POINT_VALUE}
 
 
@@ -155,7 +168,7 @@ def live_report():
     plan = make_plan(ph, pl)
     lines = [
         f"📐 台指日內 · 前日高低突破 · {today_d}",
-        f"今日錨點 前日高 {ph:.0f}／前日低 {pl:.0f}（停損固定 {STOP_PT}點, 13:30平倉）",
+        f"今日錨點 前日高 {ph:.0f}／前日低 {pl:.0f}（動態停損 {plan['stop_pt']}點=0.5×前日區間, 13:30平倉）",
         "",
         f"▲ 做多 突破 {ph:.0f}｜停損 {plan['long']['stop']:.0f}",
         f"▼ 做空 跌破 {pl:.0f}｜停損 {plan['short']['stop']:.0f}",
@@ -176,7 +189,9 @@ def live_report():
             f"{trade['pnl_pt']:+.0f}點（NT${trade['pnl_nt']:+,.0f}）")
         equity = float(os.environ.get("TXF_EQUITY", "0") or 0)
         if equity > 0:
-            pp = position_plan(equity, trade["side"], trade["entry"])
+            sp = dynamic_stop(ph, pl)
+            pp = position_plan(equity, trade["side"], trade["entry"],
+                               stop_pt=sp, pyramid_step_pt=sp)
             lines.append(f"💰 權益 NT${equity:,.0f}·風險 {pp['risk_pct']*100:.1f}%："
                          f"起始 {pp['base_units']}口, 停損 {pp['base_stop']:.0f}")
             for a in pp["adds"]:
