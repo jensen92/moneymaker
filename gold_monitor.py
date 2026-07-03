@@ -53,6 +53,9 @@ def _load_state():
                 s.setdefault("last_bar", None)
                 s.setdefault("alerted_level", None)
                 s.setdefault("notified_trail", s.get("trail"))
+                s.setdefault("units", 1 if s.get("pos") else 0)
+                s.setdefault("risk0", None)
+                s.setdefault("entry2", None)
                 return s
         except Exception:
             pass
@@ -135,11 +138,15 @@ def check_live():
                      "last_bar": bar_ts, "alerted_level": None}
             rk = f"風險{bar_close - stop:.0f}點/${(bar_close - stop) * gs.POINT_VALUE:,.0f}口"
             state["notified_trail"] = stop
+            state["units"] = 1
+            state["risk0"] = bar_close - stop
+            state["entry2"] = None
             alert = (
                 f"🟢 黃金確認進場（做多） {bar_ts[5:]} 台北\n"
                 f"進場 {bar_close:,.1f}｜停損 {stop:,.1f}（{rk}）\n"
                 f"👉 操作: 立即市價買進1口, 同時掛停損賣單 {stop:,.1f}\n"
-                f"之後收到🔼通知就把停損單上移(只升不降), ⛔通知即平倉\n{_PERF}"
+                f"浮盈達+1R(收盤≥{bar_close + (bar_close - stop):,.1f})將發🔺加碼通知;\n"
+                f"🔼通知=上移停損單, ⛔通知=平倉\n{_PERF}"
             )
         elif cfg["allow_short"] and sig == -1:
             stop = bar_close + cfg["atr_stop"] * atr_now
@@ -169,13 +176,36 @@ def check_live():
         if new_bar:
             state["trail"] = max(state["trail"], bar_close - cfg["atr_stop"] * atr_now)
             state["last_bar"] = bar_ts
+            # 🔺 加碼: 浮盈達 +1R 且僅 1 口 → 加碼 1 口 (雙框架驗證: 總利+40%,
+            #    報酬/回撤比不劣化; 只加一次, 不收緊停損, 加碼風險由浮盈支付)
+            if (state.get("units", 1) == 1 and state.get("risk0")
+                    and bar_close >= state["entry"] + state["risk0"]):
+                state["units"] = 2
+                state["entry2"] = bar_close
+                alert = (
+                    f"🔺 黃金加碼（浮盈達+1R） {bar_ts[5:]} 台北\n"
+                    f"加碼價 {bar_close:,.1f}（原進場 {state['entry']:,.1f}）\n"
+                    f"👉 操作: 市價再買1口(共2口), 停損單改為2口掛 {state['trail']:,.1f}\n"
+                    f"之後🔼通知照樣上移(2口一起), ⛔通知2口全平"
+                )
+                _save_state(state)
+                return alert, state
         if price <= state["trail"]:
             pnl = (price - state["entry"]) * gs.POINT_VALUE
+            units = state.get("units", 1)
+            if units == 2 and state.get("entry2"):
+                pnl2 = (price - state["entry2"]) * gs.POINT_VALUE
+                pnl_txt = (f"損益 第1口${pnl:+,.0f} + 加碼口${pnl2:+,.0f} "
+                           f"= ${pnl + pnl2:+,.0f}（未計滑價手續費）")
+                op = "立即市價平倉2口、取消停損單。空手等下一次🟢訊號"
+            else:
+                pnl_txt = f"損益 ${pnl:+,.0f}/口（未計滑價手續費）"
+                op = "立即市價平倉、取消原停損單。空手等下一次🟢訊號"
             alert = (
                 f"⛔ 黃金多單停損出場\n"
                 f"進場 {state['entry']:,.1f} → 出場 {price:,.1f}（停損 {state['trail']:,.1f}）\n"
-                f"損益 ${pnl:+,.0f}/口（未計滑價手續費）\n"
-                f"👉 操作: 立即市價平倉、取消原停損單。空手等下一次🟢訊號"
+                f"{pnl_txt}\n"
+                f"👉 操作: {op}"
             )
             state = {"pos": 0, "entry": None, "trail": None,
                      "last_bar": bar_ts, "alerted_level": None}
