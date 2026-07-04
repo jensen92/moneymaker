@@ -54,23 +54,19 @@
 **核心策略已在效率前緣**; 六個正交維度**無一**通過完整檢驗 (含 base 敏感度) →
 **生產參數維持不變**, 這本身確認並延伸了既有紀律 (把「不要再加濾網」用證據回答清楚)。
 
-`atr_ceiling` 機制以**預設關閉的研究開關**形式收錄 (非採用):
-- 進場當根 ATR > `atr_ceiling` × 近 200 根 ATR 中位數 → 否決該筆進場 (爆量假突破)。
-- **預設 `None` = 關閉**, 現行小時線績效**逐筆完全不變** (168筆/PF1.93/DD$22,290/9.04, 已驗證 byte-identical)。
-- 經 `gold_ceiling_robust.py` 過擬合複驗**否決** (見下方追加專項): 增益隨 base 強度消失。
-  保留純供日後複現/再驗, 對現行績效零影響。
+曾一度把 `atr_ceiling` 收錄為預設關閉的研究開關, 但因它是已否決的維度、於生產零作用,
+後續**已從程式碼完全移除** (gold_strategies / gold_daily_backtest 回到無濾網的乾淨狀態,
+小時線逐筆 byte-identical 168筆/PF1.93/DD$22,290/9.04)。本文件保留分析結論作為方法學記錄。
 
-### 新增/修改檔案
-- `gold_strategies.py` — 新增 `rolling_median_atr()`、`signal_breakout` 加 ATR 天花板研究守衛
-  (預設關閉)、CONFIG 加 `atr_ceiling`/`atr_med_win`、docstring 補記六維研究結論。
-- `gold_daily_backtest.py` — `backtest()` 加 `ceiling` 研究參數 (預設關閉), main() 附否決對照行。
-- `gold_ceiling_robust.py` — ATR 天花板過擬合五關專項檢驗 (含決定性的 base 敏感度關)。
+### 修改檔案
+- `gold_strategies.py` / `gold_daily_backtest.py` — 生產策略維持不變 (無新增濾網);
+  docstring 補記六維研究結論 (含 L2 否決原因)。
 - `gold_hd_study.py` / `gold_gate_validate.py` / `gold_dd_levers.py` — 高維度研究工具 (常駐,
   供未來『再加一個濾網』的提案先用證據自檢)。
 
 ---
 
-## 追加專項: ATR 天花板到底有沒有 overfit? (gold_ceiling_robust.py) — 結論: **有, 否決**
+## 追加專項: ATR 天花板到底有沒有 overfit? — 結論: **有, 否決 (已移除)**
 
 針對「把 L2 融入系統是否有更佳績效、是否過擬合」做五角度硬檢驗。**前四關看似都過, 第五關翻盤。**
 
@@ -103,8 +99,7 @@
   - 日線策略: 在實際採用配置上只砍利、DD 不降 → 無增益。
 
 ### 結論 (據此決定落地)
-- **生產小時線與日線一律維持 `atr_ceiling=None` (關閉)** —— 誠實不硬塞一個假改善。
-- `atr_ceiling` 參數**保留為預設關閉的研究開關** (`gold_strategies` / `gold_daily_backtest`),
-  純供日後複現/再驗, 對現行績效**零影響** (小時線逐筆 byte-identical)。
-- **方法學教訓**: 評估任何濾網/增強前, 先確認 base 已是各自時間軸的合理最優; 拿弱 base
-  當對照會系統性高估增益。這條已併入 `gold_ceiling_robust.py` 的第 (5) 關作為常駐檢查。
+- **生產小時線與日線一律不加 ATR 天花板** —— 誠實不硬塞一個假改善; `atr_ceiling` 機制
+  已從程式碼完全移除, 兩個策略回到無濾網的乾淨狀態。
+- **方法學教訓 (保留)**: 評估任何濾網/增強前, 先確認 base 已是各自時間軸的合理最優;
+  拿弱 base 當對照會系統性高估增益 —— 這是很隱蔽的過擬合形態, 要靠 base 敏感度掃描才抓得到。

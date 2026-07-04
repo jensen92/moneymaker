@@ -74,18 +74,8 @@ def load(path=CSV_1D):
     return dt, np.array(o), np.array(h), np.array(l), np.array(c)
 
 
-# ATR 天花板 (爆量假突破過濾) — 研究開關, 經 gold_ceiling_robust.py 過擬合複驗『否決』:
-#   看似降DD只在【次優base bo24/atr2.5】成立; 在本檔【採用配置 bo40/atr4/ATR20】(寬停損+
-#   長突破本就避開洗損) 上, 天花板幾乎只砍利、DD不降 (見 main() 對照行)。屬對弱基準的
-#   相對改善=過擬合, 不採用。保留參數僅供複現; None=關閉。
-DCEIL = None       # 日線 ATR 天花板倍數 (None=關閉/採用; 研究複現可設 1.5 看它如何砍利)
-DCEIL_WIN = 200    # ATR 中位數回看窗 (日)
-
-
-def backtest(dt, h, l, c, bo=DBO, st=DATR_STOP, an=DATR_N, short=False,
-             ceiling=DCEIL, ceil_win=DCEIL_WIN):
+def backtest(dt, h, l, c, bo=DBO, st=DATR_STOP, an=DATR_N, short=False):
     a = gs.atr(h, l, c, an)
-    med = gs.rolling_median_atr(a, ceil_win) if ceiling else None
     pos = 0; entry = 0.0; trail = 0.0; ei = 0; tr = []
 
     def close(px, j):
@@ -98,11 +88,8 @@ def backtest(dt, h, l, c, bo=DBO, st=DATR_STOP, an=DATR_N, short=False,
         px = c[i]
         if np.isnan(a[i]):
             continue
-        blocked = ceiling and med is not None and not np.isnan(med[i]) and a[i] > ceiling * med[i]
         hh = h[i - bo:i].max(); ll = l[i - bo:i].min()
         if pos == 0:
-            if blocked:            # 爆量假突破棒: 不進場 (尾端保險)
-                continue
             if px > hh:
                 pos, entry, ei, trail = 1, px, i, px - st * a[i]
             elif short and px < ll:
@@ -155,12 +142,6 @@ def main():
     m = metrics(tr)
     print(f"\n採用 bo{DBO}日/atr{DATR_STOP}/ATR{DATR_N}: 交易{m['n']} 勝率{m['win']:.1%} "
           f"PF{m['pf']:.2f} 總${m['tot']:+,.0f} 最大DD${m['dd']:,.0f} 報酬回撤比{m['mar']:.2f}")
-
-    # ATR 天花板對照 (過擬合複驗: 在採用配置上它只砍利、DD不降 → 否決, 見 gold_ceiling_robust)
-    mc = metrics(backtest(dt, h, l, c, ceiling=1.5))
-    print(f"對照 +ATR天花板1.5×: 交易{mc['n']} PF{mc['pf']:.2f} 總${mc['tot']:+,.0f} "
-          f"最大DD${mc['dd']:,.0f} 報酬回撤比{mc['mar']:.2f}  "
-          f"→ 總損益{m['tot']:,.0f}→{mc['tot']:,.0f}(砍利)、DD{m['dd']:,.0f}→{mc['dd']:,.0f}(不降): 否決")
     years = sorted(set(t["exit_date"][:4] for t in tr))
     py = {y: 0.0 for y in years}; ny = {y: 0 for y in years}
     for t in tr:
