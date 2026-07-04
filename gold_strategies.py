@@ -33,6 +33,21 @@
 注意: 樣本僅 2.4 年、樣本外桶僅 ~28 筆, 本就不該據以微調; 跨 regime 長期
 基準請參考 gold_daily_backtest.py (日線 26 年, PF 2.26/2024前)。
 
+高維度增強研究 (2026-07, gold_hd_study / gold_gate_validate / gold_dd_levers):
+在不動核心進出場價 (24/2.5/14) 的前提下, 另掃 6 個『正交』維度攻降DD/提風險報酬比,
+每個都跑『小時線IS/OOS + 日線26年跨regime』雙驗證。結論: 核心已在效率前緣, 六者
+無一同時通過兩關 —— 故生產參數維持不變, 僅新增一個預設關閉的尾端保險 (atr_ceiling):
+  D1 波動率目標部位: 小時線DD分文未降、OOS零變化 (只是把2024低價低波動段放大槓桿), 否決。
+  D2 慢速趨勢閘(MA): 小時線MA125/150漂亮但屬單點尖峰; 日線26年反而全面惡化、空頭年
+     虧損未縮 (突破本含動能, 閘近乎redundant) → 與既有『MA過濾no-op』結論一致, 否決。
+  D3 分段了結(+kR): k愈大愈近基準 (讓獲利奔跑最好), 提早分批只是砍利, 否決。
+  D4 ADX趨勢閘: 提PF但砍掉OOS獲利 (56k→48k), 否決。
+  L1 停損後冷卻: 小時線+日線皆單調惡化 (剔除的多是有效再進場), 乾淨否決。
+  L2 ATR天花板 (atr_ceiling): 初看是唯一日線降DD者, 但過擬合複驗 (gold_ceiling_robust.py)
+     推翻 —— 那個增益只在【次優base】(小時參數硬套日線) 成立; 換到日線【實際採用配置
+     bo40/atr4】後幾乎只砍利、DD不降 (屬對弱基準的相對改善=過擬合)。小時線上更直接傷績效。
+     否決; 僅留 CONFIG['atr_ceiling'] 為預設關閉的研究開關, 不影響現行績效。
+
 資料: futures_data/GC_60m.csv (Yahoo 連續近月合約 1 小時線, 台北時間,
 只含已完成整點棒 — load_bars 已濾掉即時快照半成品棒與非整點棒)。
 """
@@ -53,7 +68,30 @@ CONFIG = {
     "atr_n":       14,
     "atr_stop":    2.5,   # 移動停損 = 最高收盤後高水位 - atr_stop * ATR (細網格優化, 平台中心)
     "allow_short": False, # 對稱做空在黃金上驗證為負期望 (拖累 PF 1.83→1.11), 預設關閉
+    # ── 選用: ATR 天花板研究開關 (預設關閉; 經檢驗『否決』, 現行regime下為no-op) ────
+    # atr_ceiling: 進場當根 ATR 若 > 倍數×其近 atr_med_win 根 ATR 中位數 (爆量/新聞
+    #   尖峰棒) 則不進場。高維度研究曾以為它是唯一穩健降DD的正交維度, 但過擬合專項複驗
+    #   (gold_ceiling_robust.py) 推翻此結論 —— 那個『日線降DD』其實是拿【次優base】
+    #   (把小時參數 bo24/atr2.5 硬套日線, DD虛高$30k) 量出來的相對改善;
+    #   換到日線【實際採用配置 bo40/atr4/ATR20】(本就用寬停損+長突破避開洗損) 後,
+    #   天花板幾乎只砍利 (總損益 272k→197~234k)、DD 不降, 屬『對弱基準的相對改善』=過擬合。
+    #   小時生產策略上 1.5× 更是直接傷績效、2.5× 則從不觸發。結論: 否決, 無穩健增益。
+    #   保留為預設關閉的研究開關 (方便日後複現/再驗); None=關閉, 不影響現行績效。
+    "atr_ceiling": None,
+    "atr_med_win": 200,   # ATR 中位數的回看根數 (atr_ceiling 的『正常波動』基準)
 }
+
+
+def rolling_median_atr(a, win=200):
+    """ATR 的滾動中位數 — 作為『正常波動』基準, 供 atr_ceiling 尾端保險相對判斷。
+    僅在 CONFIG['atr_ceiling'] 有設值時才需計算 (預設關閉則完全不進熱路徑)。"""
+    out = np.full(len(a), np.nan)
+    for i in range(len(a)):
+        seg = a[max(0, i - win + 1):i + 1]
+        seg = seg[~np.isnan(seg)]
+        if len(seg):
+            out[i] = np.median(seg)
+    return out
 
 
 def load_bars(path=CSV, completed_only=True):
@@ -127,11 +165,14 @@ def atr(h, l, c, n=14):
     return a
 
 
-def signal_breakout(h, l, c, i, cfg=CONFIG, a=None):
+def signal_breakout(h, l, c, i, cfg=CONFIG, a=None, med=None):
     """順勢突破訊號 — 收盤突破過去 breakout 小時高點 (不含當小時) 即做多.
 
     對稱跌破做空 (allow_short=True 時) 同邏輯反向。回傳進場方向 (+1/-1/None);
     出場由呼叫端以 ATR 移動停損逐根追蹤 (見 backtest())。
+
+    med: ATR 滾動中位數陣列 (rolling_median_atr), 僅在 cfg['atr_ceiling'] 有設值時
+      需傳入; 若進場當根 ATR > atr_ceiling×med[i] (爆量/新聞尖峰) 則否決進場 (尾端保險)。
     """
     bo = cfg["breakout"]
     if i < bo + cfg["atr_n"] + 1:
@@ -140,6 +181,18 @@ def signal_breakout(h, l, c, i, cfg=CONFIG, a=None):
         a = atr(h, l, c, cfg["atr_n"])
     if np.isnan(a[i]):
         return None
+    # 尾端保險: 爆量棒不進場 (預設關閉 → 不進此分支)。med 未給時就地由 a 算滾動中位數,
+    # 讓回測/即時/監控三條路徑在啟用 atr_ceiling 時行為一致。
+    ceil = cfg.get("atr_ceiling")
+    if ceil is not None:
+        if med is not None:
+            m_i = med[i]
+        else:
+            seg = a[max(0, i - cfg.get("atr_med_win", 200) + 1):i + 1]
+            seg = seg[~np.isnan(seg)]
+            m_i = np.median(seg) if len(seg) else np.nan
+        if not np.isnan(m_i) and a[i] > ceil * m_i:
+            return None
     hh = h[i - bo:i].max()
     ll = l[i - bo:i].min()
     if c[i] > hh:
@@ -154,6 +207,7 @@ def backtest(cfg=CONFIG, csv_path=CSV):
     dt, o, h, l, c = load_bars(csv_path)
     n = len(c)
     a = atr(h, l, c, cfg["atr_n"])
+    med = rolling_median_atr(a, cfg.get("atr_med_win", 200)) if cfg.get("atr_ceiling") else None
     pos = 0
     entry = 0.0
     trail = 0.0
@@ -172,7 +226,7 @@ def backtest(cfg=CONFIG, csv_path=CSV):
         if np.isnan(a[i]):
             continue
         if pos == 0:
-            sig = signal_breakout(h, l, c, i, cfg, a)
+            sig = signal_breakout(h, l, c, i, cfg, a, med)
             if sig == 1:
                 pos, entry, entry_i = 1, px, i
                 trail = px - cfg["atr_stop"] * a[i]
