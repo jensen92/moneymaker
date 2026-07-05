@@ -122,10 +122,13 @@ python3 download_all.py                    # 先備妥日線 (data/ 或 data_adj
 python3 limitup_study.py                   # 用 data/ (未還原除權息)
 MM_DATA_DIR=data_adj python3 limitup_study.py --sealed   # 除權息還原 + 只計封板
 python3 limitup_study.py --min-turnover 100e6            # 收緊流動性門檻
+MM_DATA_DIR=data_adj python3 limitup_study.py --sealed --dump-md   # 另存 markdown 報告
 ```
 
 輸出:stdout 完整報告 (前兆均值表 / 十分位 lift / LU_SCREEN 評估 / K-D 對比),
-另存 `limitup_lift.csv` (各特徵十分位 lift 明細,已 gitignore)。
+另存 `limitup_lift.csv` (各特徵十分位 lift 明細,已 gitignore)。加
+`--dump-md [PATH]` 會把完整四段結果另存成一份 markdown 報告 (預設
+`limitup_report.md`,已 gitignore),可直接貼上或分享,不必手動整理終端輸出。
 
 **注意**:Yahoo 原始價未還原除權息,除權息日會產生假跌 (不會誤判漲停,但會影響
 動能特徵);要精確請用 `data_adj/`。漲停/跌停的**成交流動性**本研究以成交值近似,

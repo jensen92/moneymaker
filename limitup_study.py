@@ -30,9 +30,11 @@
     python3 limitup_study.py                 # 用 data/ (未還原除權息)
     MM_DATA_DIR=data_adj python3 limitup_study.py --sealed
     python3 limitup_study.py --data-dir data_adj --min-turnover 50e6
+    python3 limitup_study.py --sealed --dump-md   # 另存 markdown 報告 (limitup_report.md)
 
 需先執行 download_all.py 備妥日線資料。輸出印到 stdout, 並把十分位 lift 表
-存成 limitup_lift.csv 供進一步查閱。
+存成 limitup_lift.csv 供進一步查閱; 加 --dump-md [PATH] 會把完整四段結果
+另存成一份 markdown 報告 (預設 limitup_report.md, 可直接貼上或分享)。
 """
 import argparse
 import os
@@ -149,12 +151,12 @@ def lift_table(panel, feature, bins=10):
 
 
 def evaluate_screen(panel, mask, name):
-    """對一個布林篩選 mask 報 precision / recall / 每日候選數。"""
+    """對一個布林篩選 mask 算 precision / recall / 每日候選數, 回傳結果 dict 並印出。"""
     n_sig = int(mask.sum())
     total_events = int(panel["label"].sum())
     if n_sig == 0:
         print(f"  {name}: 無候選")
-        return
+        return {"name": name, "n_sig": 0}
     hits = int(panel.loc[mask, "label"].sum())
     precision = hits / n_sig
     recall = hits / total_events if total_events else 0.0
@@ -163,6 +165,9 @@ def evaluate_screen(panel, mask, name):
     print(f"  {name}: 候選 {n_sig} 筆 ({n_sig / ndays:.1f}/日)  "
           f"命中隔日漲停 {hits}  precision {precision:.2%} "
           f"(基準 {base:.2%}, lift {precision / base:.1f}x)  recall {recall:.1%}")
+    return {"name": name, "n_sig": n_sig, "per_day": n_sig / ndays, "hits": hits,
+            "precision": precision, "base": base, "lift": precision / base,
+            "recall": recall}
 
 
 def build_lu_screen(panel):
@@ -185,7 +190,10 @@ def build_lu_screen(panel):
 
 
 def compare_kd(data, panel):
-    """與現行 K / D 訊號比對: 訊號隔日漲停命中率 + 漲停事前覆蓋率 + 候選重疊。"""
+    """與現行 K / D 訊號比對: 訊號隔日漲停命中率 + 漲停事前覆蓋率 + 候選重疊。
+
+    回傳 list of dict (每個策略一筆), 供 markdown 報告重用。
+    """
     print("\n" + "=" * 72)
     print("與現行 K / D 策略對比")
     print("=" * 72)
@@ -195,7 +203,9 @@ def compare_kd(data, panel):
                       panel.loc[panel["label"] > 0.5, "date"]))
     lu_mask = build_lu_screen(panel)
     lu_screen_days = set(zip(panel.loc[lu_mask, "code"], panel.loc[lu_mask, "date"]))
+    base = panel["label"].mean()
 
+    results = []
     for key in ("K", "D"):
         sigs = bt.collect_signals(data, key)
         # 訊號日 (code, 訊號日T) → 檢查該股 T+1 是否漲停
@@ -210,19 +220,104 @@ def compare_kd(data, panel):
                     if g >= LIMIT_THRESH:
                         hit += 1
         n = sum(len(v) for v in sigs.values())
+        covered = len(lu_days & sig_days)
+        inter = len(lu_screen_days & sig_days)
+        union = len(lu_screen_days | sig_days)
+        res = {
+            "key": key, "n_signals": n, "base": base,
+            "next_day_lu_rate": (hit / n) if n else None,
+            "covered": covered, "total_lu": len(lu_days),
+            "coverage": (covered / len(lu_days)) if lu_days else None,
+            "jaccard_inter": inter, "jaccard_union": union,
+            "jaccard": (inter / union) if union else None,
+        }
+        results.append(res)
         print(f"\n策略 {key}: 訊號 {n} 筆")
         if n:
-            print(f"  訊號隔日自身漲停率: {hit / n:.2%}  (基準 {panel['label'].mean():.2%})")
-        # 全體漲停被 K/D 訊號『事前 (前一日) 命中』的覆蓋率
-        covered = len(lu_days & sig_days)
+            print(f"  訊號隔日自身漲停率: {hit / n:.2%}  (基準 {base:.2%})")
         if lu_days:
             print(f"  漲停前兆日被策略 {key} 覆蓋: "
                   f"{covered}/{len(lu_days)} = {covered / len(lu_days):.1%}")
-        # 候選與 LU_SCREEN 的 Jaccard 重疊
-        inter = len(lu_screen_days & sig_days)
-        union = len(lu_screen_days | sig_days)
         if union:
             print(f"  與 LU_SCREEN 候選 Jaccard 重疊: {inter}/{union} = {inter / union:.1%}")
+    return results
+
+
+# ─────────────────────────────────────────────────────────────
+# Markdown 報告 (--dump-md)
+# ─────────────────────────────────────────────────────────────
+
+def _md_table(headers, rows):
+    """由表頭與資料列組出 markdown 表格字串。"""
+    out = ["| " + " | ".join(headers) + " |",
+           "|" + "|".join(["---"] * len(headers)) + "|"]
+    for r in rows:
+        out.append("| " + " | ".join(str(c) for c in r) + " |")
+    return "\n".join(out)
+
+
+def build_markdown(meta, mean_rows, lift_tables, screen_results, kd_results):
+    """把四段結果組成完整 markdown 報告字串。"""
+    L = []
+    L.append("# 漲停前特徵統計報告\n")
+    L.append(f"- 產生時間: {meta['now']}")
+    L.append(f"- 資料夾: `{meta['data_dir']}`  ·  股票數: {meta['n_stocks']}")
+    L.append(f"- 事件定義: 隔日漲停 (+10%, `gain>= {LIMIT_THRESH}`)"
+             f"{'  ·  只計封板鎖死' if meta['sealed'] else ''}")
+    L.append(f"- 篩選門檻: 收盤≥{meta['min_price']:g}, 日成交值≥{meta['min_turnover']:g}")
+    L.append(f"- 可交易宇宙樣本: **{meta['n_rows']:,}** 個股票日  ·  "
+             f"漲停事件: **{meta['n_events']:,}**  ·  "
+             f"基準隔日漲停率: **{meta['base']:.3%}**\n")
+
+    L.append("## 1. 前兆特徵均值 (漲停前一日 vs 全體)\n")
+    L.append("差異倍率 = 漲停前一日均值 / 全體均值; 明顯偏離 1 者為候選前兆。\n")
+    L.append(_md_table(
+        ["特徵", "漲停前一日", "全體", "差異倍率"],
+        [(f, f"{a:.4f}", f"{b:.4f}", f"{r:.2f}") for f, a, b, r in mean_rows]))
+    L.append("")
+
+    L.append("## 2. 各特徵十分位『隔日漲停』條件機率與 lift\n")
+    L.append("lift = 該分位隔日漲停率 / 基準; lift>1 且隨分位單調上升者為有效前兆。\n")
+    for f, t in lift_tables:
+        top, bot = t.iloc[-1], t.iloc[0]
+        L.append(f"### {f}  (最高分位 lift {top['lift']:.2f}x · 最低分位 lift {bot['lift']:.2f}x)\n")
+        L.append(_md_table(
+            ["分位", "P(隔日漲停)", "lift", "n"],
+            [(idx, f"{r['mean']:.3%}", f"{r['lift']:.2f}x", int(r["count"]))
+             for idx, r in t.iterrows()]))
+        L.append("")
+
+    L.append("## 3. 漲停前兆篩選 LU_SCREEN 評估\n")
+    L.append("precision = 候選中隔日真漲停比例; recall = 全體漲停被涵蓋比例。\n")
+    srows = []
+    for s in screen_results:
+        if s.get("n_sig", 0) == 0:
+            srows.append((s["name"], 0, "-", "-", "-", "-", "-"))
+        else:
+            srows.append((s["name"], s["n_sig"], f"{s['per_day']:.1f}", s["hits"],
+                          f"{s['precision']:.2%}", f"{s['lift']:.1f}x",
+                          f"{s['recall']:.1%}"))
+    L.append(_md_table(
+        ["篩選", "候選數", "每日", "命中", "precision", "lift", "recall"], srows))
+    L.append("")
+
+    L.append("## 4. 與現行 K / D 策略對比\n")
+    L.append("『訊號隔日漲停率』= K/D 進場訊號日的隔日該股自身漲停比例; "
+             "『漲停事前覆蓋』= 全體漲停在前一日被 K/D 訊號命中的比例; "
+             "『Jaccard』= K/D 候選與 LU_SCREEN 候選 (code,日) 的重疊度。\n")
+    krows = []
+    for r in kd_results:
+        krows.append((
+            f"策略 {r['key']}", r["n_signals"],
+            f"{r['next_day_lu_rate']:.2%}" if r["next_day_lu_rate"] is not None else "-",
+            f"{r['covered']}/{r['total_lu']} = {r['coverage']:.1%}" if r["coverage"] is not None else "-",
+            f"{r['jaccard_inter']}/{r['jaccard_union']} = {r['jaccard']:.1%}" if r["jaccard"] is not None else "-",
+        ))
+    L.append(_md_table(
+        ["策略", "訊號數", "訊號隔日漲停率", "漲停事前覆蓋", "與 LU_SCREEN Jaccard"], krows))
+    L.append(f"\n> 基準隔日漲停率 {meta['base']:.3%}。K/D 訊號隔日漲停率高於基準代表 K/D "
+             "進場點附近確有動能, 但覆蓋率/Jaccard 若偏低則印證兩者是低重疊的不同獵物。\n")
+    return "\n".join(L)
 
 
 def main():
@@ -231,6 +326,8 @@ def main():
     ap.add_argument("--min-turnover", type=float, default=50e6, help="最低日成交值")
     ap.add_argument("--min-price", type=float, default=10.0, help="最低股價")
     ap.add_argument("--sealed", action="store_true", help="只計鎖死漲停 (收在最高附近)")
+    ap.add_argument("--dump-md", nargs="?", const="limitup_report.md", default=None,
+                    metavar="PATH", help="把完整結果另存為 markdown 報告 (預設 limitup_report.md)")
     args = ap.parse_args()
     if args.data_dir:
         bt.DATA_DIR = (args.data_dir if os.path.isabs(args.data_dir)
@@ -256,22 +353,24 @@ def main():
     print("=" * 72)
     print(f"{'特徵':<14}{'漲停前一日':>14}{'全體':>12}{'差異倍率':>12}")
     pre = panel[panel["label"] > 0.5]
-    rows = []
+    mean_rows = []
     for f in FEATURES:
         a, b = pre[f].mean(), panel[f].mean()
         ratio = a / b if b else float("nan")
-        rows.append((f, a, b, ratio))
+        mean_rows.append((f, a, b, ratio))
         print(f"{f:<14}{a:>14.4f}{b:>12.4f}{ratio:>12.2f}")
 
     # ── 各特徵十分位 lift ──
     print("\n" + "=" * 72)
     print("各特徵十分位『隔日漲停』條件機率與 lift (找單調前兆)")
     print("=" * 72)
+    lift_tables = []
     all_lift = []
     for f in FEATURES:
         t = lift_table(panel, f)
         if t is None:
             continue
+        lift_tables.append((f, t))
         top = t.iloc[-1]
         bot = t.iloc[0]
         print(f"\n[{f}]  最高分位 lift {top['lift']:.2f}x  最低分位 lift {bot['lift']:.2f}x")
@@ -290,15 +389,31 @@ def main():
     print("漲停前兆篩選 LU_SCREEN 評估 (可解釋固定規則)")
     print("=" * 72)
     mask = build_lu_screen(panel)
-    evaluate_screen(panel, mask, "LU_SCREEN")
-    # 幾個對照: 只用單維最強前兆
-    evaluate_screen(panel, panel["rs_rank"] >= 0.90, "僅 RS>=0.90")
-    evaluate_screen(panel, panel["prox_52wh"] >= 0.95, "僅 貼52週高>=0.95")
-    evaluate_screen(panel, (panel["contraction"] <= 0.8) & (panel["day_range"] <= 0.04),
-                    "僅 波動壓縮")
+    screen_results = [
+        evaluate_screen(panel, mask, "LU_SCREEN"),
+        evaluate_screen(panel, panel["rs_rank"] >= 0.90, "僅 RS>=0.90"),
+        evaluate_screen(panel, panel["prox_52wh"] >= 0.95, "僅 貼52週高>=0.95"),
+        evaluate_screen(panel, (panel["contraction"] <= 0.8) & (panel["day_range"] <= 0.04),
+                        "僅 波動壓縮"),
+    ]
 
     # ── 與現行 K/D 對比 ──
-    compare_kd(data, panel)
+    kd_results = compare_kd(data, panel)
+
+    # ── 選用: 輸出 markdown 報告 ──
+    if args.dump_md:
+        import datetime
+        meta = {
+            "now": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "data_dir": bt.DATA_DIR, "n_stocks": len(data),
+            "sealed": args.sealed, "min_price": args.min_price,
+            "min_turnover": args.min_turnover, "n_rows": len(panel),
+            "n_events": n_events, "base": base,
+        }
+        md = build_markdown(meta, mean_rows, lift_tables, screen_results, kd_results)
+        with open(args.dump_md, "w", encoding="utf-8") as fh:
+            fh.write(md)
+        print(f"\nmarkdown 報告已輸出 → {args.dump_md}")
     return 0
 
 
