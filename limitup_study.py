@@ -194,6 +194,21 @@ def build_lu_screen(panel):
     )
 
 
+# 綜合分數用的正交前兆 (各 group 取代表, 避免動能因子彼此高度相關重複計權):
+#   relative strength / 中期動能 / 量能擴張 / 貼前高 / 當日點火
+LU_SCORE_FEATURES = ["rs_rank", "ret20", "vr5", "prox_52wh", "gain_today"]
+
+
+def build_lu_score(panel):
+    """多因子百分位綜合分數 (0~1): 取正交且單調的前兆各自全樣本百分位再平均。
+
+    比固定 AND 門檻更適合『排名取前 N』—— 用分數高低即可平滑調 precision/recall 取捨,
+    不必猜死門檻。各因子皆『越高越易漲停』(方向已由十分位 lift 校準)。
+    """
+    ranks = [panel[f].rank(pct=True) for f in LU_SCORE_FEATURES]
+    return sum(ranks) / len(ranks)
+
+
 def compare_kd(data, panel):
     """與現行 K / D 訊號比對: 訊號隔日漲停命中率 + 漲停事前覆蓋率 + 候選重疊。
 
@@ -292,8 +307,10 @@ def build_markdown(meta, mean_rows, lift_tables, screen_results, kd_results):
              for idx, r in t.iterrows()]))
         L.append("")
 
-    L.append("## 3. 漲停前兆篩選 LU_SCREEN 評估\n")
-    L.append("precision = 候選中隔日真漲停比例; recall = 全體漲停被涵蓋比例。\n")
+    L.append("## 3. 漲停前兆篩選評估 (LU_SCREEN 固定規則 + LU_SCORE 分數排名)\n")
+    L.append("precision = 候選中隔日真漲停比例; recall = 全體漲停被涵蓋比例; "
+             "lift = precision / 基準。LU_SCORE 前 N% 為多因子百分位綜合分數取前 N%,"
+             "分數越嚴 (N 越小) precision 越高、recall 越低。\n")
     srows = []
     for s in screen_results:
         if s.get("n_sig", 0) == 0:
@@ -395,12 +412,22 @@ def main():
     print("=" * 72)
     mask = build_lu_screen(panel)
     screen_results = [
-        evaluate_screen(panel, mask, "LU_SCREEN"),
+        evaluate_screen(panel, mask, "LU_SCREEN (固定規則v2)"),
         evaluate_screen(panel, panel["rs_rank"] >= 0.90, "僅 RS>=0.90"),
         evaluate_screen(panel, panel["prox_52wh"] >= 0.95, "僅 貼52週高>=0.95"),
         evaluate_screen(panel, (panel["contraction"] <= 0.8) & (panel["day_range"] <= 0.04),
                         "僅 波動壓縮"),
     ]
+
+    # ── LU_SCORE 綜合分數排名 (取前 N%, 平滑調 precision/recall) ──
+    print("\n" + "=" * 72)
+    print("LU_SCORE 綜合分數排名 (多因子百分位平均, 取前 N%)")
+    print("=" * 72)
+    score = build_lu_score(panel)
+    for q in (0.999, 0.995, 0.99, 0.98, 0.95, 0.90):
+        thr = score.quantile(q)
+        screen_results.append(
+            evaluate_screen(panel, score >= thr, f"LU_SCORE 前{(1 - q) * 100:g}%"))
 
     # ── 與現行 K/D 對比 ──
     kd_results = compare_kd(data, panel)
