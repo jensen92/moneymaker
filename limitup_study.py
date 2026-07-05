@@ -171,21 +171,26 @@ def evaluate_screen(panel, mask, name):
 
 
 def build_lu_screen(panel):
-    """可解釋的漲停前兆篩選 (與 K/D 對照用)。
+    """可解釋的漲停前兆篩選 (與 K/D 對照用) — 動能延續版 (v2, 資料校準)。
 
-    綜合前兆最強的維度: 高相對強度 + 貼近52週高 + 波動/振幅壓縮 + 量縮蓄勢 +
-    多頭排列 + 就緒於20日高附近但尚未過度延伸。門檻取自各特徵 lift 表的高分位起點,
-    刻意用『固定可讀規則』而非過擬合的權重, 方便和 K/D 直接比較結構差異。
+    ⚠️ v1 (壓縮蓄勢版: 低 contraction/day_range + 量縮) 經 122 萬股票日實證『否決』:
+    precision 1.04% < 基準 2.08% (lift 0.5x)。真實資料顯示隔日漲停的前兆是『動能點火/
+    延伸』而非『安靜壓縮』—— 差異倍率最大者為 gain_today 6.77x、ext20 3.73x、ret5 4.14x,
+    而 contraction 1.11x(擴張)、day_range 1.65x(更寬)、vol_dryup 0.80x(量縮反而更少)。
+
+    v2 依十分位 lift 改用『同向動能』因子 (門檻取各特徵 lift 明顯 >1 的分位起點):
+      高相對強度 (rs_rank, 最強且單調, 最高分位 2.70x) + 中期強動能 (ret20) +
+      量能擴張 (vr5) + 貼近前高 (prox_52wh) + 當日紅K點火 (gain_today>0)。
+    注意: 這等於篩『已經在噴』的延伸股, 屬動能延續/追強觀察名單, 追高風險高,
+    與 K/D 刻意避開延伸、緊貼樞軸的設計相反 (正是結構差異的體現)。實際 precision/
+    recall 請以 --dump-md 重跑確認, 再依需要微調。
     """
     return (
-        (panel["rs_rank"] >= 0.80)
+        (panel["rs_rank"] >= 0.90)
+        & (panel["ret20"] >= 0.15)
+        & (panel["vr5"] >= 1.5)
         & (panel["prox_52wh"] >= 0.90)
-        & (panel["trend_score"] >= 5)
-        & (panel["contraction"] <= 0.90)
-        & (panel["day_range"] <= 0.05)
-        & (panel["vol_dryup"] > 0.5)
-        & (panel["near20h"] >= 0.95)
-        & (panel["ext20"] <= 0.12)
+        & (panel["gain_today"] > 0.0)
     )
 
 
