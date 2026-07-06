@@ -19,6 +19,13 @@
   X3 strail : 結構跟蹤 — 停損跟隨新確認轉折低(高)點 ± ATR 緩衝, 只升不降
   X4 atrail : ATR 吊燈 — 停損 = 進場後最高(低)收盤 ∓ k×ATR
 
+橫盤濾網 (range_mult, 預設0=關): 過濾短區間洗盤。CHoCH/BOS 觸發時,
+量測「本次結構擺幅」= |突破的轉折點 − 對側轉折點 (或BOS基準點)|;
+若擺幅 < range_mult × ATR14, 視為盤整區間內的雜訊擺動, 結構狀態照樣翻轉
+(定義不變, 不影響指標本身), 但**跳過這次進場**。橫盤期間相鄰轉折點彼此
+靠得很近 (擺幅小), 是典型的假突破/洗盤特徵；趨勢期間擺幅自然放大,
+不受影響。
+
 計量: 以「指數點」為單位 (mark-to-market 逐根權益), 成本以點數計
 (TWII/TXF 預設來回 2 點 ≈ 手續費+期交稅+1點滑價)。
 換算: 大台 1 點 = NT$200。
@@ -31,7 +38,7 @@ import math
 import os
 import sys
 
-from smc_backtest import DATA, atr_series, load_csv, pivot_flags
+from smc_backtest import DATA, adx_series, atr_series, load_csv, pivot_flags
 
 ENTRIES = ("breakout", "retest", "ob", "bos")
 EXITS = ("rr", "choch", "strail", "atrail")
@@ -42,10 +49,11 @@ P = dict(length=5, atr_mult=0.5, rr=2.0, trail_k=3.0, expiry=30)
 # ---------------------------------------------------------------- 引擎
 def simulate(bars, entry, exit_, length=5, atr_mult=0.5, rr=2.0,
              trail_k=3.0, expiry=30, cost_pts=2.0, allow_long=True,
-             allow_short=True):
+             allow_short=True, range_mult=0.0, adx_min=0.0):
     """回傳 (trades, equity_pts) — equity 為逐根 mark-to-market 累計點數。"""
     phs, pls = pivot_flags(bars, length)
     atr = atr_series(bars)
+    adx = adx_series(bars) if adx_min > 0 else None
 
     last_ph = last_pl = None          # CHoCH 用 (突破後重置)
     conf_ph = conf_pl = None          # 最新已確認轉折 (不重置; trail/BOS 用)
@@ -150,11 +158,13 @@ def simulate(bars, entry, exit_, length=5, atr_mult=0.5, rr=2.0,
             bos_lvl = None
             last_pl = None
 
-        # CHoCH → 依進場模式建立委託 / 出場
+        # CHoCH → 依進場模式建立委託 / 出場 (橫盤濾網: 擺幅太小視為洗盤, 跳過進場)
         if sig_dir != 0:
             if pos is not None and exit_ in ("choch",) and pos["dir"] == -sig_dir:
                 pos["exit_mkt"] = True
-            if pos is None and ((sig_dir == 1 and allow_long) or (sig_dir == -1 and allow_short)):
+            choppy = range_mult > 0 and abs(broken - base) < range_mult * a
+            weak_trend = adx_min > 0 and (adx[i] is None or adx[i] < adx_min)
+            if pos is None and not choppy and not weak_trend and ((sig_dir == 1 and allow_long) or (sig_dir == -1 and allow_short)):
                 stop0 = base - a * atr_mult if sig_dir == 1 else base + a * atr_mult
                 if entry == "breakout" or entry == "bos":
                     pend = dict(dir=sig_dir, limit=None, bar=i, stop0=stop0)
@@ -166,16 +176,21 @@ def simulate(bars, entry, exit_, length=5, atr_mult=0.5, rr=2.0,
             elif pos is not None:
                 pend = None  # 持倉中不留反向/同向舊掛單
 
-        # BOS 續勢進場 (E5): 趨勢方向上收盤突破新確認轉折價
+        # BOS 續勢進場 (E5): 趨勢方向上收盤突破新確認轉折價 (同橫盤濾網)
         if entry == "bos" and pos is None and pend is None and bos_lvl is not None:
+            weak_trend = adx_min > 0 and (adx[i] is None or adx[i] < adx_min)
             if trend == 1 and c > bos_lvl and allow_long:
                 stop0 = (conf_pl - a * atr_mult) if conf_pl is not None else None
-                if stop0 is not None and stop0 < c:
+                choppy = (range_mult > 0 and conf_pl is not None
+                         and abs(bos_lvl - conf_pl) < range_mult * a)
+                if stop0 is not None and stop0 < c and not choppy and not weak_trend:
                     pend = dict(dir=1, limit=None, bar=i, stop0=stop0)
                 bos_lvl = None
             elif trend == -1 and c < bos_lvl and allow_short:
                 stop0 = (conf_ph + a * atr_mult) if conf_ph is not None else None
-                if stop0 is not None and stop0 > c:
+                choppy = (range_mult > 0 and conf_ph is not None
+                         and abs(bos_lvl - conf_ph) < range_mult * a)
+                if stop0 is not None and stop0 > c and not choppy and not weak_trend:
                     pend = dict(dir=-1, limit=None, bar=i, stop0=stop0)
                 bos_lvl = None
 
@@ -305,6 +320,21 @@ def main():
                                       rr=P["rr"], trail_k=P["trail_k"],
                                       expiry=P["expiry"]))
                 print(fmt(f"    L={L} ATRx{am}", m))
+
+    # 橫盤濾網 (擺幅/ADX) 對最佳組的效果 — 過濾短區間洗盤是否有穩健幫助
+    if ranked:
+        e0, x0 = ranked[0]
+        print(f"\n### 橫盤濾網效果 ({e0}+{x0} 只做多)")
+        for tag, bars, cost in (("TWII60m", p60, 2.0),
+                                ("TWII1d", d1d, 2.0) if d1d else (None, None, None),
+                                ("GC60m", dgc, 0.5) if dgc else (None, None, None)):
+            if bars is None:
+                continue
+            for rm, am in ((0.0, 0.0), (1.5, 0.0), (0.0, 20.0)):
+                q = dict(P); q["range_mult"] = rm; q["adx_min"] = am
+                m = metrics(*simulate(bars, e0, x0, allow_short=False,
+                                      cost_pts=cost, **q))
+                print(fmt(f"  {tag} range={rm} adx={am}", m))
 
     # 金額換算 (最佳組, 10口大台)
     if ranked:

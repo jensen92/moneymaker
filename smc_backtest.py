@@ -121,6 +121,49 @@ def atr_series(bars, n=14):
     return out
 
 
+def adx_series(bars, n=14):
+    """Wilder ADX, 對齊 Pine ta.dmi 的 ADX 輸出。用於橫盤/趨勢強度濾網:
+    ADX 低 = 橫盤雜訊, ADX 高 = 有效趨勢。"""
+    ln = len(bars)
+    out = [None] * ln
+    tr_rma = plus_rma = minus_rma = dx_rma = None
+    trs = plus_list = minus_list = None
+    dxs = []
+    for i in range(1, ln):
+        _, o, h, l, c = bars[i]
+        _, po, ph, pl_, pc = bars[i - 1]
+        up = h - ph
+        down = pl_ - l
+        plus_dm = up if (up > down and up > 0) else 0.0
+        minus_dm = down if (down > up and down > 0) else 0.0
+        tr = max(h - l, abs(h - pc), abs(l - pc))
+        if tr_rma is None:
+            trs = [tr] if trs is None else trs + [tr]
+            plus_list = [plus_dm] if plus_list is None else plus_list + [plus_dm]
+            minus_list = [minus_dm] if minus_list is None else minus_list + [minus_dm]
+            if len(trs) == n:
+                tr_rma = sum(trs)
+                plus_rma = sum(plus_list)
+                minus_rma = sum(minus_list)
+        else:
+            tr_rma = tr_rma - tr_rma / n + tr
+            plus_rma = plus_rma - plus_rma / n + plus_dm
+            minus_rma = minus_rma - minus_rma / n + minus_dm
+        if tr_rma:
+            pdi = 100 * plus_rma / tr_rma
+            mdi = 100 * minus_rma / tr_rma
+            dx = 100 * abs(pdi - mdi) / (pdi + mdi) if (pdi + mdi) > 0 else 0.0
+            dxs.append(dx)
+            if dx_rma is None:
+                if len(dxs) == n:
+                    dx_rma = sum(dxs) / n
+                    out[i] = dx_rma
+            else:
+                dx_rma = (dx_rma * (n - 1) + dx) / n
+                out[i] = dx_rma
+    return out
+
+
 def pivot_flags(bars, length):
     """回傳兩個 list: 在 bar i 「確認」的 pivot high/low 價 (轉折點在 i-length)。"""
     n = len(bars)
