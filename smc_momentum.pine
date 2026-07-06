@@ -1,0 +1,125 @@
+//@version=5
+// SMC Momentum [BOS + Chandelier] — 同一套 SMC 指標 (pivot結構/CHoCH/BOS/ATR),
+// 但改用回測驗證較優的進出場 (smc_lab.py 實驗結論, 詳見 SMC_STRATEGY.md):
+//
+//   進場: CHoCH 結構翻多 → 次根開盤市價進場 (不等回踩);
+//         趨勢持續中每次 BOS (收盤突破新確認轉折高) 亦重新進場。
+//   出場: 初始停損 = 前轉折低 − ATR×緩衝; 之後吊燈跟蹤 (進場後最高收盤 − k×ATR),
+//         停損只升不降。無固定停利 — 讓趨勢自己決定終點。
+//   預設只做多: 台指/黃金回測中空單皆負期望 (可用開關開啟做空)。
+//
+// 回測 (TWII 60m 2023-07~2026-07, 成本來回2點): 63筆 勝率54% PF 4.0
+// 總 +19,265 點, MaxDD 2,567 點; L={3,5,8} × k={2,3,4} 九格全正。
+// ⚠️ 屬趨勢行情策略: 15年日線驗證有 8 年虧損 (2013-2018 連六年不賺),
+//    獲利集中在大趨勢年。盤整年會小額流血, 用它前先接受這件事。
+strategy("SMC Momentum [BOS+Chandelier]", shorttitle="SMC_Mom", overlay=true,
+     initial_capital=1000000, default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100, commission_type=strategy.commission.cash_per_order,
+     commission_value=50)
+
+// ==========================================
+// 參數
+// ==========================================
+length  = input.int(5, "轉折點週期 (Pivot Length)", minval=2)
+atr_buf = input.float(0.5, "初始停損 ATR 緩衝", step=0.1, minval=0.0)
+trail_k = input.float(3.0, "吊燈跟蹤 ATR 倍數", step=0.5, minval=0.5)
+allow_long  = input.bool(true,  "允許做多")
+allow_short = input.bool(false, "允許做空 (回測為負期望, 預設關)")
+
+// ==========================================
+// 指標核心 (與原策略相同)
+// ==========================================
+ph = ta.pivothigh(high, length, length)
+pl = ta.pivotlow(low, length, length)
+atr_val = ta.atr(14)
+
+var float last_ph = na   // CHoCH 用 (突破後重置)
+var float last_pl = na
+var float conf_ph = na   // 最新已確認轉折 (不重置; BOS/停損用)
+var float conf_pl = na
+var int   trend   = 0
+var float bos_lvl = na   // 待突破的續勢轉折價
+
+if not na(ph)
+    last_ph := ph
+    conf_ph := ph
+    if trend == 1
+        bos_lvl := ph
+if not na(pl)
+    last_pl := pl
+    conf_pl := pl
+    if trend == -1
+        bos_lvl := pl
+
+bull_choch = trend <= 0 and not na(last_ph) and not na(last_pl) and close > last_ph
+bear_choch = trend >= 0 and not na(last_pl) and not na(last_ph) and close < last_pl
+
+// ==========================================
+// 進場訊號 (CHoCH 翻轉 + BOS 續勢)
+// ==========================================
+bool long_sig  = false
+bool short_sig = false
+float stop0 = na
+
+if bull_choch
+    trend := 1
+    bos_lvl := na
+    if strategy.position_size == 0 and allow_long
+        long_sig := true
+        stop0 := last_pl - atr_val * atr_buf
+    last_ph := na
+if bear_choch
+    trend := -1
+    bos_lvl := na
+    if strategy.position_size == 0 and allow_short
+        short_sig := true
+        stop0 := last_ph + atr_val * atr_buf
+    last_pl := na
+
+// BOS 續勢再進場 (趨勢中被吊燈掃出後, 結構續走可重新上車)
+if not long_sig and not short_sig and strategy.position_size == 0 and not na(bos_lvl)
+    if trend == 1 and allow_long and close > bos_lvl and not na(conf_pl)
+        s = conf_pl - atr_val * atr_buf
+        if s < close
+            long_sig := true
+            stop0 := s
+        bos_lvl := na
+    if trend == -1 and allow_short and close < bos_lvl and not na(conf_ph)
+        s = conf_ph + atr_val * atr_buf
+        if s > close
+            short_sig := true
+            stop0 := s
+        bos_lvl := na
+
+// ==========================================
+// 執行與吊燈出場
+// ==========================================
+var float trail = na
+var float hh = na
+var float ll = na
+
+if long_sig
+    strategy.entry("L", strategy.long)
+    trail := stop0
+    hh := close
+if short_sig
+    strategy.entry("S", strategy.short)
+    trail := stop0
+    ll := close
+
+if strategy.position_size > 0
+    hh := math.max(nz(hh, close), close)
+    trail := math.max(trail, hh - trail_k * atr_val) // 只升不降
+    strategy.exit("Lx", "L", stop=trail)
+if strategy.position_size < 0
+    ll := math.min(nz(ll, close), close)
+    trail := math.min(trail, ll + trail_k * atr_val) // 只降不升
+    strategy.exit("Sx", "S", stop=trail)
+
+// ==========================================
+// 視覺輔助
+// ==========================================
+plot(strategy.position_size != 0 ? trail : na, color=color.red, style=plot.style_linebr, title="吊燈停損")
+plot(strategy.position_size == 0 and not na(bos_lvl) ? bos_lvl : na,
+     color=color.orange, style=plot.style_linebr, title="BOS 待突破價")
+bgcolor(trend == 1 ? color.new(color.teal, 92) : trend == -1 ? color.new(color.maroon, 92) : na, title="結構方向")
