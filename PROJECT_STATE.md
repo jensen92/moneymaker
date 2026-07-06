@@ -97,6 +97,9 @@
 - 資料夾 gitignored:`data/` `data_adj/` `futures_data/` (含 basket/) `web_cache/` 等;
   快取/state 檔 (`gold_state.json` 等) 亦 gitignored。
 - 分散驗證工具:`python3 season_validate.py` (季節逐年%)、`gold_daily_backtest.py` (黃金26年)。
+- **策略驗證流程 skill**:`.claude/skills/strategy-pipeline/` — 假設→回測→抗過擬合六檢→
+  統計檢定→凍結模擬→實單閘門→監控的 8 道閘門標準流程 (Claude Code 內 `/strategy-pipeline`);
+  驗證報告模板在其 `references/report-template.md`。新策略開發/驗證/上實單一律走此流程。
 
 ---
 
