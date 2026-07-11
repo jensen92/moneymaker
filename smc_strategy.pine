@@ -1,0 +1,124 @@
+//@version=5
+// SMC Structure Strategy [Quant] v2 — 修正版
+//
+// 相對原版的修正 (詳見 SMC_STRATEGY.md):
+//   1. CHoCH 需 OB 來源轉折點存在才觸發 — 原版在 last_ph/last_pl 被重置為 na 時,
+//      strategy.entry(limit=na) 會退化成「市價單」, 且 strategy.exit(stop=na,
+//      limit=na) 不會掛任何出場單 → 無停損裸倉。
+//   2. 趨勢翻轉時 strategy.cancel 反向殘留掛單 — 原版舊限價單永久有效,
+//      可能在趨勢已反轉後才成交在錯誤方向。
+//   3. 進場時鎖定停損/停利 — 原版每根用「當前」ob_top/ob_bottom 重算,
+//      持倉中發生新 CHoCH 時停損會漂移到不相關的新區塊價位。
+//   4. 掛單有效期 + 區塊失效判定 — 原版限價單無期限, 可能數月後在完全
+//      不同的結構下成交; 價格收破區塊遠端代表區塊已被吃掉, 掛單應撤銷。
+//   5. risk <= 0 防護 — 跳空成交劣於停損時不掛停利 (僅停損盡快出場)。
+strategy("SMC Structure Strategy [Quant] v2", shorttitle="SMC_v2", overlay=true,
+     initial_capital=1000000, default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100, commission_type=strategy.commission.cash_per_order,
+     commission_value=50)
+
+// ==========================================
+// 模組一：參數設定 (Parameters)
+// ==========================================
+grp1 = "結構轉折設定 (Structure Logic)"
+length = input.int(5, title="轉折點週期 (Pivot Length)", minval=2, group=grp1)
+
+grp2 = "風控與停利設定 (Risk & Reward)"
+rr_ratio    = input.float(2.0, title="風險報酬比 (Risk/Reward Ratio)", step=0.1, minval=0.5, group=grp2)
+atr_mult    = input.float(0.5, title="停損 ATR 緩衝倍數", step=0.1, minval=0.0, group=grp2)
+expiry_bars = input.int(30, title="掛單有效根數 (0=不限)", minval=0, group=grp2)
+allow_long  = input.bool(true, title="允許做多", group=grp2)
+allow_short = input.bool(true, title="允許做空", group=grp2)
+
+// ==========================================
+// 模組二：核心變數與極值運算 (Calculations)
+// ==========================================
+ph = ta.pivothigh(high, length, length)
+pl = ta.pivotlow(low, length, length)
+
+var float last_ph = na
+var float last_pl = na
+var int   trend   = 0 // 1 = 多頭結構, -1 = 空頭結構
+
+var float ob_top    = na // 訂單區塊上緣 (多單進場線 / 空單停損線)
+var float ob_bottom = na // 訂單區塊下緣 (空單進場線 / 多單停損線)
+var bool  awaiting_entry = false
+var int   order_bar  = na  // 掛單起始 bar (計算有效期)
+var float ent_stop   = na  // 進場時鎖定的停損 (不隨新區塊漂移)
+var float ent_target = na  // 進場時鎖定的停利
+
+atr_val = ta.atr(14)
+
+if not na(ph)
+    last_ph := ph
+if not na(pl)
+    last_pl := pl
+
+// ==========================================
+// 模組三：狀態判定與訂單區塊生成 (State Machine)
+// ==========================================
+// 修正 1: 兩個轉折點都存在才觸發, 避免 na 區塊 → 市價裸倉
+bull_choch = trend <= 0 and not na(last_ph) and not na(last_pl) and close > last_ph
+bear_choch = trend >= 0 and not na(last_pl) and not na(last_ph) and close < last_pl
+
+if bull_choch
+    trend := 1
+    ob_top    := last_pl + (atr_val * atr_mult)
+    ob_bottom := last_pl - (atr_val * atr_mult)
+    awaiting_entry := true
+    order_bar := bar_index
+    strategy.cancel("Short_Entry") // 修正 2: 撤反向殘留掛單
+    last_ph := na
+
+if bear_choch
+    trend := -1
+    ob_top    := last_ph + (atr_val * atr_mult)
+    ob_bottom := last_ph - (atr_val * atr_mult)
+    awaiting_entry := true
+    order_bar := bar_index
+    strategy.cancel("Long_Entry")
+    last_pl := na
+
+// 修正 4: 掛單過期 / 區塊被收破遠端 → 撤單
+if awaiting_entry and strategy.position_size == 0
+    expired  = expiry_bars > 0 and bar_index - order_bar > expiry_bars
+    violated = trend == 1 ? close < ob_bottom : close > ob_top
+    if expired or violated
+        awaiting_entry := false
+        strategy.cancel("Long_Entry")
+        strategy.cancel("Short_Entry")
+
+// ==========================================
+// 模組四：部位執行與出場邏輯 (Order Execution)
+// ==========================================
+if awaiting_entry and strategy.position_size == 0
+    if trend == 1 and allow_long
+        strategy.entry("Long_Entry", strategy.long, limit=ob_top)
+    if trend == -1 and allow_short
+        strategy.entry("Short_Entry", strategy.short, limit=ob_bottom)
+
+// 修正 3: 成交當根鎖定停損/停利, 之後不再隨 ob_* 改變
+if strategy.position_size != 0 and awaiting_entry
+    awaiting_entry := false
+    if strategy.position_size > 0
+        ent_stop := ob_bottom
+        risk = strategy.position_avg_price - ent_stop
+        ent_target := risk > 0 ? strategy.position_avg_price + risk * rr_ratio : na // 修正 5
+    else
+        ent_stop := ob_top
+        risk = ent_stop - strategy.position_avg_price
+        ent_target := risk > 0 ? strategy.position_avg_price - risk * rr_ratio : na
+
+if strategy.position_size > 0
+    strategy.exit("Long_Exit", "Long_Entry", stop=ent_stop, limit=ent_target)
+if strategy.position_size < 0
+    strategy.exit("Short_Exit", "Short_Entry", stop=ent_stop, limit=ent_target)
+
+// ==========================================
+// 模組五：視覺輔助 (Visual Helpers)
+// ==========================================
+plot(strategy.position_size != 0 ? ent_stop : na, color=color.red, style=plot.style_linebr, title="停損線")
+plot(strategy.position_size != 0 ? ent_target : na, color=color.green, style=plot.style_linebr, title="停利線")
+plot(awaiting_entry and strategy.position_size == 0 ? (trend == 1 ? ob_top : ob_bottom) : na,
+     color=color.orange, style=plot.style_linebr, title="掛單價")
+bgcolor(trend == 1 ? color.new(color.teal, 92) : trend == -1 ? color.new(color.maroon, 92) : na, title="結構方向")
