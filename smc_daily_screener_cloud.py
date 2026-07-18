@@ -52,9 +52,11 @@ def check_signal(df):
             entry = active_fvg_top
             sl = entry - (today_atr * 2.5)
             tp = entry + (today_atr * 5.0)
+            trend_strength = ((today_close - today_sma) / today_sma) * 100
             return {
                 'FVG_Date': str(fvg_date)[:10],
                 'Close': today_close,
+                'Trend_Strength': round(trend_strength, 2),
                 'Entry_Limit': entry,
                 'Stop_Loss': sl,
                 'Take_Profit': tp
@@ -75,9 +77,9 @@ def push_to_telegram(df_res, scan_date):
     df_res.to_csv(temp_csv.name, index=False, encoding='utf-8-sig')
     
     preview_df = df_res.head(10)
-    msg = f"🔥 *SMC 台股日線買點掃描 (雲端自動版)* 🔥\n📅 日期: `{scan_date}`\n📊 總計符合: {len(df_res)} 檔\n\n*📌 精選前 10 檔預覽:*\n"
+    msg = f"🔥 *SMC 台股日線買點掃描 (最強趨勢版)* 🔥\n📅 日期: `{scan_date}`\n📊 總計符合: {len(df_res)} 檔\n\n*📌 精選最強趨勢前 10 名:*\n"
     for _, row in preview_df.iterrows():
-        msg += f"• `{row['Ticker']}` ｜ 進場: `{row['Entry_Limit']:.1f}` ｜ 停損: `{row['Stop_Loss']:.1f}`\n"
+        msg += f"• `{row['Ticker']}` ｜ 趨勢強度: `+{row['Trend_Strength']}%`\n  進場: `{row['Entry_Limit']:.1f}` ｜ 停損: `{row['Stop_Loss']:.1f}`\n"
         
     msg += "\n📎 *完整清單請見下方 CSV 附件*"
     
@@ -172,7 +174,8 @@ def main():
         return
         
     df_res = pd.DataFrame(results)
-    df_res = df_res.sort_values('Ticker').reset_index(drop=True)
+    # 依照 Trend_Strength (趨勢強度，即乖離率) 由大到小排序，選出最強勢的股票
+    df_res = df_res.sort_values('Trend_Strength', ascending=False).reset_index(drop=True)
     scan_date = df_res['Date'].iloc[0]
     
     print(f"\n掃描完成！耗時 {time.time()-t0:.2f} 秒。最新資料日期: {scan_date}")
