@@ -77,9 +77,10 @@ def push_to_telegram(df_res, scan_date):
     df_res.to_csv(temp_csv.name, index=False, encoding='utf-8-sig')
     
     preview_df = df_res.head(10)
-    msg = f"🔥 *SMC 台股日線買點掃描 (最強趨勢版)* 🔥\n📅 日期: `{scan_date}`\n📊 總計符合: {len(df_res)} 檔\n\n*📌 精選最強趨勢前 10 名:*\n"
+    msg = f"🔥 *SMC 台股日線買點掃描 (甜蜜區)* 🔥\n📅 日期: `{scan_date}`\n📊 總計符合: {len(df_res)} 檔 (趨勢 20~60%)\n\n*📌 精選最強趨勢前 10 名:*\n"
     for _, row in preview_df.iterrows():
-        msg += f"• `{row['Ticker']}` ｜ 趨勢: `+{row['Trend_Strength']}%`\n  現價: `{row['Close']:.1f}` ｜ 進場: `{row['Entry_Limit']:.1f}` ｜ 停損: `{row['Stop_Loss']:.1f}`\n"
+        sl_pct = abs(row['Entry_Limit'] - row['Stop_Loss']) / row['Entry_Limit'] * 100
+        msg += f"• `{row['Ticker']}` ｜ 趨勢: `+{row['Trend_Strength']}%`\n  現價: `{row['Close']:.1f}` ｜ 進: `{row['Entry_Limit']:.1f}` ｜ 損: `{row['Stop_Loss']:.1f}` (-{sl_pct:.1f}%) ｜ 利: `{row['Take_Profit']:.1f}`\n"
         
     msg += "\n📎 *完整清單請見下方 CSV 附件*"
     
