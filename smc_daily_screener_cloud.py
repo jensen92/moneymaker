@@ -29,29 +29,43 @@ def check_signal(df):
     active_fvg_top = None
     active_fvg_bot = None
     fvg_date = None
+    highest_since_fvg = None
     
     for i in range(2, len(recent_df)):
         if lows[i] > highs[i-2]:
             active_fvg_top = lows[i]
             active_fvg_bot = highs[i-2]
             fvg_date = dates[i]
+            highest_since_fvg = highs[i]
             
         if active_fvg_top is not None:
             if lows[i] < active_fvg_bot:
                 active_fvg_top = None
                 active_fvg_bot = None
+                highest_since_fvg = None
+            else:
+                if highs[i] > highest_since_fvg:
+                    highest_since_fvg = highs[i]
                 
     last_idx = len(recent_df) - 1
     today_low = lows[last_idx]
     today_close = closes[last_idx]
     today_sma = sma_200[last_idx]
-    today_atr = atrs[last_idx]
     
     if active_fvg_top is not None and today_close > today_sma:
         if today_low <= active_fvg_top:
             entry = active_fvg_top
-            sl = entry - (today_atr * 2.5)
-            tp = entry + (today_atr * 5.0)
+            sl = active_fvg_bot
+            tp = highest_since_fvg
+            
+            risk = entry - sl
+            reward = tp - entry
+            if risk <= 0: return None
+            
+            rr_ratio = reward / risk
+            if rr_ratio < 1.2:
+                return None
+                
             trend_strength = ((today_close - today_sma) / today_sma) * 100
             return {
                 'FVG_Date': str(fvg_date)[:10],
