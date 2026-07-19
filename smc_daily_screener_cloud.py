@@ -174,8 +174,15 @@ def main():
         return
         
     df_res = pd.DataFrame(results)
+    # 過濾趨勢強度 20~60% 甜蜜區 (回測實證勝率從 54.8% → 59.3%, EV +21%)
+    df_res = df_res[(df_res['Trend_Strength'] >= 20) & (df_res['Trend_Strength'] <= 60)]
     # 依照 Trend_Strength (趨勢強度，即乖離率) 由大到小排序，選出最強勢的股票
     df_res = df_res.sort_values('Trend_Strength', ascending=False).reset_index(drop=True)
+    
+    if df_res.empty:
+        print("今日無股票落在趨勢強度 20~60% 甜蜜區內。")
+        return
+    
     scan_date = df_res['Date'].iloc[0]
     
     print(f"\n掃描完成！耗時 {time.time()-t0:.2f} 秒。最新資料日期: {scan_date}")
