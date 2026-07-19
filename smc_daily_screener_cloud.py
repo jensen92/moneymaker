@@ -79,7 +79,7 @@ def push_to_telegram(df_res, scan_date):
     preview_df = df_res.head(10)
     msg = f"🔥 *SMC 台股日線買點掃描 (最強趨勢版)* 🔥\n📅 日期: `{scan_date}`\n📊 總計符合: {len(df_res)} 檔\n\n*📌 精選最強趨勢前 10 名:*\n"
     for _, row in preview_df.iterrows():
-        msg += f"• `{row['Ticker']}` ｜ 趨勢強度: `+{row['Trend_Strength']}%`\n  進場: `{row['Entry_Limit']:.1f}` ｜ 停損: `{row['Stop_Loss']:.1f}`\n"
+        msg += f"• `{row['Ticker']}` ｜ 趨勢: `+{row['Trend_Strength']}%`\n  現價: `{row['Close']:.1f}` ｜ 進場: `{row['Entry_Limit']:.1f}` ｜ 停損: `{row['Stop_Loss']:.1f}`\n"
         
     msg += "\n📎 *完整清單請見下方 CSV 附件*"
     
