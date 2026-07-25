@@ -51,16 +51,20 @@ def check_signal(df):
     today_low = lows[last_idx]
     today_close = closes[last_idx]
     today_sma = sma_200[last_idx]
+    today_atr = atrs[last_idx]
     
     if active_fvg_top is not None and today_close > today_sma:
         if today_low <= active_fvg_top:
             entry = active_fvg_top
-            sl = active_fvg_bot
+            
+            raw_sl = active_fvg_bot - (0.5 * today_atr)
+            min_sl_dist = max(entry * 0.025, 1.0 * today_atr)
+            sl = min(raw_sl, entry - min_sl_dist)
             tp = highest_since_fvg
             
             risk = entry - sl
             reward = tp - entry
-            if risk <= 0: return None
+            if risk <= 0 or reward <= 0: return None
             
             rr_ratio = reward / risk
             if rr_ratio < 1.2:
