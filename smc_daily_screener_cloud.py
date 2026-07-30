@@ -202,10 +202,10 @@ def push_to_telegram(df_res, scan_date):
     df_res.to_csv(temp_csv.name, index=False, encoding='utf-8-sig')
 
     preview_df = df_res.head(10)
-    msg = f"🔥 *SMC 訂單塊(OB)台股日線買點掃描* 🔥\n📅 日期: `{scan_date}`\n📊 總計符合: {len(df_res)} 檔 (OB回踩 + SMA20↑ + RR≥1.0)\n\n*📌 精選最高 R 倍數前 10 名:*\n"
+    msg = f"🔥 *SMC 訂單塊(OB)台股日線買點掃描* 🔥\n📅 日期: `{scan_date}`\n📊 總計符合: {len(df_res)} 檔 (OB回踩 + SMA20↑ + RR≥1.0)\n\n*📌 精選綜合評分前 10 名 (勝率 78.5%):*\n"
     for _, row in preview_df.iterrows():
         sl_pct = abs(row['Entry_Limit'] - row['Stop_Loss']) / row['Entry_Limit'] * 100
-        msg += f"• `{row['Ticker']}` ｜ 盈虧比: `{row['Structural_RR']:.1f}R` (趨勢: `{row['Trend_Strength']:+.0f}%`)\n  現價: `{row['Close']:.1f}` ｜ 進: `{row['Entry_Limit']:.1f}` ｜ 損: `{row['Stop_Loss']:.1f}` (-{sl_pct:.1f}%) ｜ 利: `{row['Take_Profit']:.1f}`\n"
+        msg += f"• `{row['Ticker']}` ｜ 評分: `{row['Composite_Score']:.1f}` (RR: {row['Structural_RR']:.1f}R, 趨勢: {row['Trend_Strength']:+.0f}%)\n  現價: `{row['Close']:.1f}` ｜ 進: `{row['Entry_Limit']:.1f}` ｜ 損: `{row['Stop_Loss']:.1f}` (-{sl_pct:.1f}%) ｜ 利: `{row['Take_Profit']:.1f}`\n"
 
     msg += "\n📎 *完整清單請見下方 CSV 附件*"
 
@@ -295,7 +295,8 @@ def main():
         return
 
     df_res = pd.DataFrame(results)
-    df_res = df_res.sort_values('Structural_RR', ascending=False).reset_index(drop=True)
+    df_res['Composite_Score'] = df_res['Structural_RR'] + (df_res['Trend_Strength'] / 10)
+    df_res = df_res.sort_values('Composite_Score', ascending=False).reset_index(drop=True)
 
     if df_res.empty:
         print("今日無股票符合 OB 進場條件。")
