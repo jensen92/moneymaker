@@ -57,6 +57,7 @@ def check_signal(df):
                           np.maximum(abs(df['high'] - df['close'].shift()),
                                      abs(df['low'] - df['close'].shift())))
     df['ATR'] = df['TR'].rolling(window=14).mean()
+    df['Vol_Ratio'] = df['volume'] / df['volume'].rolling(20).mean()
 
     recent_df = df.tail(120).copy().reset_index(drop=True)
     if len(recent_df) < 60:
@@ -175,6 +176,8 @@ def check_signal(df):
 
                 trend_strength = ((today_close - sma_200[i]) / sma_200[i]) * 100 if sma_200[i] > 0 else 0
 
+                vol_ratio = recent_df['Vol_Ratio'].values[i] if 'Vol_Ratio' in recent_df.columns else 1.0
+
                 return {
                     'OB_Date': str(dates[ob_bar])[:10],
                     'Close': today_close,
@@ -183,6 +186,7 @@ def check_signal(df):
                     'Entry_Limit': round(entry, 2),
                     'Stop_Loss': round(sl, 2),
                     'Take_Profit': round(tp, 2),
+                    'Vol_Ratio': round(vol_ratio, 2),
                 }
 
     return None
@@ -202,11 +206,12 @@ def push_to_telegram(df_res, scan_date):
     df_res.to_csv(temp_csv.name, index=False, encoding='utf-8-sig')
 
     preview_df = df_res.head(10)
-    msg = f"🔥 *SMC 訂單塊(OB)台股日線買點掃描* 🔥\n📅 日期: `{scan_date}`\n📊 總計符合: {len(df_res)} 檔 (OB回踩 + SMA20↑ + RR≥1.0)\n\n*📌 精選綜合評分前 10 名 (勝率 79.9%):*\n"
+    msg = f"🔥 *SMC 訂單塊(OB)台股日線買點掃描* 🔥\n📅 日期: `{scan_date}`\n📊 總計符合: {len(df_res)} 檔 (OB回踩 + SMA20↑ + RR≥1.0 + 量能≥1.0x)\n\n*📌 精選綜合評分前 10 名 (回測勝率 82%):*\n"
     for _, row in preview_df.iterrows():
         sl_pct = abs(row['Entry_Limit'] - row['Stop_Loss']) / row['Entry_Limit'] * 100
-        msg += f"• `{row['Ticker']}` ｜ 評分: `{row['Composite_Score']:.1f}` (RR: {row['Structural_RR']:.1f}, 趨勢: {row['Trend_Strength']:+.0f}%, 資金: +{row['Val_Rank_Score']:.1f})\n  現價: `{row['Close']:.1f}` ｜ 進: `{row['Entry_Limit']:.1f}` ｜ 損: `{row['Stop_Loss']:.1f}` (-{sl_pct:.1f}%) ｜ 利: `{row['Take_Profit']:.1f}`\n"
+        msg += f"• `{row['Ticker']}` ｜ 評分: `{row['Composite_Score']:.1f}` (RR: {row['Structural_RR']:.1f}, 趨勢: {row['Trend_Strength']:+.0f}%, 量能: {row.get('Vol_Ratio', 0):.1f}x)\n  現價: `{row['Close']:.1f}` ｜ 進: `{row['Entry_Limit']:.1f}` ｜ 損: `{row['Stop_Loss']:.1f}` (-{sl_pct:.1f}%) ｜ 利: `{row['Take_Profit']:.1f}`\n"
 
+    msg += "\n⏰ *持倉規則: 進場後 10 天未到停利請主動平倉*"
     msg += "\n📎 *完整清單請見下方 CSV 附件*"
 
     url = f"https://api.telegram.org/bot{token}/sendDocument"
@@ -246,6 +251,9 @@ def process_yf_data(data, ticker_list):
 
             signal = check_signal(df)
             if signal:
+                # 量能過濾：量能倍率 < 1.0 的量縮股不進場
+                if signal.get('Vol_Ratio', 1.0) < 1.0:
+                    continue
                 signal['Ticker'] = ticker
                 signal['Date'] = str(df['date'].iloc[-1])[:10]
                 recent_df = df.tail(5)
@@ -302,7 +310,9 @@ def main():
         df_res['Val_Rank_Score'] = df_res['Val_5d'].rank(pct=True) * 2
     else:
         df_res['Val_Rank_Score'] = 0
-    df_res['Composite_Score'] = df_res['Structural_RR'] + (df_res['Trend_Strength'] / 10) + df_res['Val_Rank_Score']
+    # 趨勢 > 20% 追高懲罰 (扣 1 分)
+    df_res['Trend_Penalty'] = np.where(df_res['Trend_Strength'] > 20, -1.0, 0)
+    df_res['Composite_Score'] = df_res['Structural_RR'] + (df_res['Trend_Strength'] / 10) + df_res['Val_Rank_Score'] + df_res['Trend_Penalty']
     df_res = df_res.sort_values('Composite_Score', ascending=False).reset_index(drop=True)
 
     if df_res.empty:
