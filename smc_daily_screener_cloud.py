@@ -150,44 +150,53 @@ def check_signal(df):
 
         for j, (ob_top, ob_bot, ob_bar) in enumerate(active_bull_obs):
             if lows[i] <= ob_top and closes[i] >= ob_bot:
-                entry = ob_top
+                status = 'Triggered'
+                dist_pct = 0.0
+            elif lows[i] > ob_top and (lows[i] - ob_top) / ob_top <= 0.05:
+                status = 'Near'
+                dist_pct = (lows[i] - ob_top) / ob_top
+            else:
+                continue
+            
+            entry = ob_top
+            raw_sl = ob_bot - (0.5 * today_atr)
+            min_sl_dist = max(entry * 0.025, 1.0 * today_atr)
+            sl = min(raw_sl, entry - min_sl_dist)
 
-                raw_sl = ob_bot - (0.5 * today_atr)
-                min_sl_dist = max(entry * 0.025, 1.0 * today_atr)
-                sl = min(raw_sl, entry - min_sl_dist)
+            tp = None
+            for ph_idx, ph_val in pivot_highs:
+                if ob_bar <= ph_idx < i and ph_val > entry:
+                    tp = ph_val
+            if tp is None:
+                tp = max(highs[ob_bar:i + 1]) if ob_bar < i else highs[i]
+            if tp <= entry:
+                tp = entry + 2.0 * today_atr
 
-                tp = None
-                for ph_idx, ph_val in pivot_highs:
-                    if ob_bar <= ph_idx < i and ph_val > entry:
-                        tp = ph_val
-                if tp is None:
-                    tp = max(highs[ob_bar:i + 1]) if ob_bar < i else highs[i]
-                if tp <= entry:
-                    tp = entry + 2.0 * today_atr
+            risk = entry - sl
+            reward = tp - entry
+            if risk <= 0 or reward <= 0:
+                continue
 
-                risk = entry - sl
-                reward = tp - entry
-                if risk <= 0 or reward <= 0:
-                    continue
+            structural_rr = reward / risk
+            if structural_rr < 1.0:
+                continue
 
-                structural_rr = reward / risk
-                if structural_rr < 1.0:
-                    continue
+            trend_strength = ((today_close - sma_200[i]) / sma_200[i]) * 100 if sma_200[i] > 0 else 0
 
-                trend_strength = ((today_close - sma_200[i]) / sma_200[i]) * 100 if sma_200[i] > 0 else 0
+            vol_ratio = recent_df['Vol_Ratio'].values[i] if 'Vol_Ratio' in recent_df.columns else 1.0
 
-                vol_ratio = recent_df['Vol_Ratio'].values[i] if 'Vol_Ratio' in recent_df.columns else 1.0
-
-                return {
-                    'OB_Date': str(dates[ob_bar])[:10],
-                    'Close': today_close,
-                    'Trend_Strength': round(trend_strength, 2),
-                    'Structural_RR': round(structural_rr, 2),
-                    'Entry_Limit': round(entry, 2),
-                    'Stop_Loss': round(sl, 2),
-                    'Take_Profit': round(tp, 2),
-                    'Vol_Ratio': round(vol_ratio, 2),
-                }
+            return {
+                'OB_Date': str(dates[ob_bar])[:10],
+                'Close': today_close,
+                'Trend_Strength': round(trend_strength, 2),
+                'Structural_RR': round(structural_rr, 2),
+                'Entry_Limit': round(entry, 2),
+                'Stop_Loss': round(sl, 2),
+                'Take_Profit': round(tp, 2),
+                'Vol_Ratio': round(vol_ratio, 2),
+                'Status': status,
+                'Dist_Pct': round(dist_pct * 100, 2),
+            }
 
     return None
 
@@ -205,11 +214,23 @@ def push_to_telegram(df_res, scan_date):
     temp_csv = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
     df_res.to_csv(temp_csv.name, index=False, encoding='utf-8-sig')
 
-    preview_df = df_res.head(10)
-    msg = f"🔥 *SMC 訂單塊(OB)台股日線買點掃描* 🔥\n📅 日期: `{scan_date}`\n📊 總計符合: {len(df_res)} 檔 (OB回踩 + SMA20↑ + RR≥1.0 + 量能≥1.0x)\n\n*📌 精選綜合評分前 10 名 (回測勝率 82%):*\n"
-    for _, row in preview_df.iterrows():
-        sl_pct = abs(row['Entry_Limit'] - row['Stop_Loss']) / row['Entry_Limit'] * 100
-        msg += f"• `{row['Ticker']}` ｜ 評分: `{row['Composite_Score']:.1f}` (RR: {row['Structural_RR']:.1f}, 趨勢: {row['Trend_Strength']:+.0f}%, 量能: {row.get('Vol_Ratio', 0):.1f}x)\n  現價: `{row['Close']:.1f}` ｜ 進: `{row['Entry_Limit']:.1f}` ｜ 損: `{row['Stop_Loss']:.1f}` (-{sl_pct:.1f}%) ｜ 利: `{row['Take_Profit']:.1f}`\n"
+    df_triggered = df_res[df_res['Status'] == 'Triggered'].copy()
+    df_near = df_res[df_res['Status'] == 'Near'].copy()
+
+    msg = f"🔥 *SMC 訂單塊(OB)台股日線買點掃描* 🔥\n📅 日期: `{scan_date}`\n"
+    if not df_triggered.empty:
+        msg += f"📊 總計符合: {len(df_triggered)} 檔 (OB回踩 + SMA20↑ + RR≥1.0 + 量能≥1.0x)\n\n*📌 精選綜合評分前 10 名 (回測勝率 82%):*\n"
+        for _, row in df_triggered.head(10).iterrows():
+            sl_pct = abs(row['Entry_Limit'] - row['Stop_Loss']) / row['Entry_Limit'] * 100
+            msg += f"• `{row['Ticker']}` ｜ 評分: `{row['Composite_Score']:.1f}` (RR: {row['Structural_RR']:.1f}, 趨勢: {row['Trend_Strength']:+.0f}%, 量能: {row.get('Vol_Ratio', 0):.1f}x)\n  現價: `{row['Close']:.1f}` ｜ 進: `{row['Entry_Limit']:.1f}` ｜ 損: `{row['Stop_Loss']:.1f}` (-{sl_pct:.1f}%) ｜ 利: `{row['Take_Profit']:.1f}`\n"
+    else:
+        msg += "📉 今日無任何股票觸發 OB 回踩買進訊號。\n"
+
+    if not df_near.empty:
+        df_near = df_near.sort_values('Dist_Pct', ascending=True)
+        msg += f"\n👀 *即將符合 (距離 OB 頂部 < 5%) 前 5 名:*\n"
+        for _, row in df_near.head(5).iterrows():
+            msg += f"• `{row['Ticker']}` ｜ 現價: `{row['Close']:.1f}` ｜ 距離: `+{row['Dist_Pct']:.1f}%` (進: `{row['Entry_Limit']:.1f}`)\n"
 
     msg += "\n⏰ *持倉規則: 進場後 10 天未到停利請主動平倉*"
     msg += "\n📎 *完整清單請見下方 CSV 附件*"
@@ -301,8 +322,9 @@ def main():
         results_two = process_yf_data(data_two, two_tickers)
         results.extend(results_two)
 
-    if not results:
-        msg = "今日無任何股票觸發 OB 回踩買進訊號。"
+    df_res = pd.DataFrame(results)
+    if df_res.empty:
+        msg = "今日無任何股票觸發或接近 OB 回踩買進訊號。"
         print(msg)
         
         token = os.environ.get('TELEGRAM_BOT_TOKEN')
@@ -312,8 +334,6 @@ def main():
             url = f"https://api.telegram.org/bot{token}/sendMessage"
             requests.post(url, data={'chat_id': chat_id, 'text': f"📉 掃描完成！\n{msg}"})
         return
-
-    df_res = pd.DataFrame(results)
     if 'Val_5d' in df_res.columns and len(df_res) > 1:
         df_res['Val_Rank_Score'] = df_res['Val_5d'].rank(pct=True) * 2
     else:
@@ -322,17 +342,6 @@ def main():
     df_res['Trend_Penalty'] = np.where(df_res['Trend_Strength'] > 20, -1.0, 0)
     df_res['Composite_Score'] = df_res['Structural_RR'] + (df_res['Trend_Strength'] / 10) + df_res['Val_Rank_Score'] + df_res['Trend_Penalty']
     df_res = df_res.sort_values('Composite_Score', ascending=False).reset_index(drop=True)
-
-    if df_res.empty:
-        msg = "今日無股票符合 OB 進場條件。"
-        print(msg)
-        token = os.environ.get('TELEGRAM_BOT_TOKEN')
-        chat_id = os.environ.get('TELEGRAM_CHAT_ID')
-        if token and chat_id:
-            import requests
-            url = f"https://api.telegram.org/bot{token}/sendMessage"
-            requests.post(url, data={'chat_id': chat_id, 'text': f"📉 掃描完成！\n{msg}"})
-        return
 
     scan_date = df_res['Date'].iloc[0]
 
