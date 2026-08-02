@@ -302,7 +302,15 @@ def main():
         results.extend(results_two)
 
     if not results:
-        print("今日無任何股票觸發 OB 回踩買進訊號。")
+        msg = "今日無任何股票觸發 OB 回踩買進訊號。"
+        print(msg)
+        
+        token = os.environ.get('TELEGRAM_BOT_TOKEN')
+        chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+        if token and chat_id:
+            import requests
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            requests.post(url, data={'chat_id': chat_id, 'text': f"📉 掃描完成！\n{msg}"})
         return
 
     df_res = pd.DataFrame(results)
@@ -316,7 +324,14 @@ def main():
     df_res = df_res.sort_values('Composite_Score', ascending=False).reset_index(drop=True)
 
     if df_res.empty:
-        print("今日無股票符合 OB 進場條件。")
+        msg = "今日無股票符合 OB 進場條件。"
+        print(msg)
+        token = os.environ.get('TELEGRAM_BOT_TOKEN')
+        chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+        if token and chat_id:
+            import requests
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            requests.post(url, data={'chat_id': chat_id, 'text': f"📉 掃描完成！\n{msg}"})
         return
 
     scan_date = df_res['Date'].iloc[0]
