@@ -237,6 +237,48 @@ def get_grain_signal_report(
         "trailing_status": trailing_status
     }
 
+def fetch_deferred_price(symbol: str, current_price: float) -> float:
+    """嘗試從 Yahoo Finance 抓取次月（遠月）期貨合約價格，用以計算期限結構。"""
+    import requests
+    base = "ZS" if symbol == "ZS" else "ZC"
+    months = ["F","H","K","N","Q","U","X","Z"] if base == "ZS" else ["H","K","N","U","Z"]
+    
+    year = datetime.now().year % 100
+    tickers = []
+    for y in range(year, year + 2):
+        for m_idx, m in enumerate(months):
+            tickers.append((y, m_idx, f"{base}{m}{y}.CBT"))
+            
+    valid_prices = []
+    for y, m_idx, t in tickers:
+        try:
+            r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{t}", 
+                             headers=HEADERS, timeout=2)
+            res = r.json()
+            if res.get("chart", {}).get("result"):
+                price = res["chart"]["result"][0]["meta"]["regularMarketPrice"]
+                valid_prices.append((t, price))
+        except Exception:
+            pass
+            
+    if not valid_prices:
+        return 0.0
+        
+    front_idx = -1
+    for i, (t, p) in enumerate(valid_prices):
+        if abs(p - current_price) < 1.0:
+            front_idx = i
+            break
+            
+    if front_idx != -1 and front_idx + 1 < len(valid_prices):
+        return valid_prices[front_idx + 1][1]
+    
+    for t, p in valid_prices:
+        if abs(p - current_price) > 0.1:
+            return p
+            
+    return 0.0
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-fetch", action="store_true")
@@ -258,10 +300,9 @@ def main():
         current_atr = float(a[-1])
         date_obj = datetime.strptime(dt_strs[-1], "%Y-%m-%d").date()
         
-        # We don't have deferred month data from Yahoo continuous futures easily, 
-        # so we pass 0.0 to let it default to "無法計算" without crashing.
+        # 嘗試從 Yahoo 動態抓取對應的遠月期貨報價
         front_price = current_price
-        deferred_price = 0.0 
+        deferred_price = fetch_deferred_price(key, current_price)
         
         # Estimate highest_since_entry and entry_price by walking back to the start of the current season
         # This is a rough estimation since we don't have a real portfolio tracker
@@ -305,7 +346,7 @@ def main():
             else:
                 print(f"     停損狀態: {report['trailing_status']}")
         else:
-            print(f"  ⚪ {report['suggested_action']}")
+            print(f"  {report['suggested_action']}")
 
 if __name__ == "__main__":
     main()
