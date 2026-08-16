@@ -6,8 +6,18 @@ grain_signals.py — 大宗農產品期貨量化策略模組 (升級版 S1 + S2)
 3. 非對稱保護：2.0 ATR 初始停損 + 浮盈 2.0 ATR 後啟動 1.2 ATR 移動追蹤停利。
 """
 
+import argparse
+import csv
+import os
+import time
 from datetime import datetime, date
 from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DATA = os.path.join(HERE, "futures_data")
+HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
 
 GRAIN_CONFIG = {
     "ZS": {
@@ -63,6 +73,66 @@ GRAIN_CONFIG = {
         "trailing_stop_atr": 1.2
     }
 }
+
+def _path(key):
+    return os.path.join(DATA, f"{key}.csv")
+
+def fetch_grains():
+    """抓 ZS=F / ZC=F 日線 (2000 年至今), 覆寫 futures_data/{key}.csv。"""
+    import requests
+    os.makedirs(DATA, exist_ok=True)
+    p1 = 946684800
+    ok = True
+    for key, sym in (("ZS", "ZS=F"), ("ZC", "ZC=F")):
+        try:
+            r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}",
+                             params={"period1": p1, "period2": int(time.time()),
+                                     "interval": "1d"}, headers=HEADERS, timeout=30)
+            r.raise_for_status()
+            res = r.json()["chart"]["result"][0]
+            ts = res["timestamp"]; q = res["indicators"]["quote"][0]
+            rows = []
+            for i, t in enumerate(ts):
+                o, h, l, c = q["open"][i], q["high"][i], q["low"][i], q["close"][i]
+                if None in (o, h, l, c):
+                    continue
+                rows.append((time.strftime("%Y-%m-%d", time.gmtime(t)),
+                             round(o, 2), round(h, 2), round(l, 2), round(c, 2),
+                             int(q["volume"][i] or 0)))
+            if not rows:
+                ok = False
+                continue
+            with open(_path(key), "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["date", "open", "high", "low", "close", "volume"])
+                w.writerows(rows)
+        except Exception:
+            ok = False
+    return ok
+
+def _load(key):
+    o, h, l, c, dt = [], [], [], [], []
+    with open(_path(key)) as f:
+        for r in csv.DictReader(f):
+            try:
+                o.append(float(r["open"])); h.append(float(r["high"]))
+                l.append(float(r["low"])); c.append(float(r["close"]))
+            except ValueError:
+                continue
+            dt.append(r["date"])
+    return dt, np.array(o), np.array(h), np.array(l), np.array(c)
+
+def _atr(h, l, c, n=20):
+    a = np.full(len(c), np.nan)
+    if len(c) < n:
+        return a
+    tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]),
+                                              np.abs(l[1:] - c[:-1])))
+    tr = np.concatenate([[h[0] - l[0]], tr])
+    a[n - 1] = tr[:n].mean()
+    for i in range(n, len(c)):
+        a[i] = (a[i - 1] * (n - 1) + tr[i]) / n
+    return a
 
 def evaluate_term_structure(front_price: float, deferred_price: float) -> Tuple[str, float, float]:
     """評估期限結構與建議部位縮放係數"""
@@ -166,3 +236,76 @@ def get_grain_signal_report(
         "stop_price": round(stop_price, 2),
         "trailing_status": trailing_status
     }
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--no-fetch", action="store_true")
+    args = ap.parse_args()
+    if not args.no_fetch:
+        fetch_grains()
+
+    print("🌾 穀物期貨個別季節進出場（升級版 S1+S2）")
+    for key in ("ZS", "ZC"):
+        try:
+            dt_strs, o, h, l, c = _load(key)
+        except Exception:
+            continue
+        a = _atr(h, l, c, 20)
+        if len(c) == 0:
+            continue
+            
+        current_price = float(c[-1])
+        current_atr = float(a[-1])
+        date_obj = datetime.strptime(dt_strs[-1], "%Y-%m-%d").date()
+        
+        # We don't have deferred month data from Yahoo continuous futures easily, 
+        # so we pass 0.0 to let it default to "無法計算" without crashing.
+        front_price = current_price
+        deferred_price = 0.0 
+        
+        # Estimate highest_since_entry and entry_price by walking back to the start of the current season
+        # This is a rough estimation since we don't have a real portfolio tracker
+        in_season, active_season = is_in_season_window(key, date_obj)
+        entry_price = None
+        highest_since_entry = None
+        
+        if in_season and active_season:
+            em = active_season["entry_month"]
+            ed = active_season["entry_day"]
+            # Find the start date of this season in our data
+            for i in range(len(dt_strs)-1, -1, -1):
+                d_obj = datetime.strptime(dt_strs[i], "%Y-%m-%d").date()
+                in_s, _ = is_in_season_window(key, d_obj)
+                if not in_s:
+                    # We just exited the season backwards, so i+1 is entry
+                    if i+1 < len(c):
+                        entry_price = float(c[i+1])
+                        highest_since_entry = float(np.max(h[i+1:]))
+                    break
+        
+        report = get_grain_signal_report(
+            symbol=key,
+            current_price=current_price,
+            front_price=front_price,
+            deferred_price=deferred_price,
+            atr=current_atr,
+            highest_since_entry=highest_since_entry,
+            entry_price=entry_price,
+            current_date=date_obj
+        )
+        
+        print(f"\n{report['name']}  現價 {report['current_price']:,.1f}｜ATR {report['atr']:.1f}")
+        print(f"｜結構狀態: {report['term_structure_status']}")
+        if report['in_season']:
+            print(f"  🟢 目前為季節性多頭窗口: {report['active_season_name']}")
+            print(f"     邏輯: {report['active_thesis']}")
+            print(f"  👉 操作建議: {report['suggested_action']} (部位縮放 {report['suggested_weight']})")
+            if entry_price:
+                print(f"     停損狀態: {report['trailing_status']} (估計進場價 {entry_price:.1f})")
+            else:
+                print(f"     停損狀態: {report['trailing_status']}")
+        else:
+            print(f"  ⚪ {report['suggested_action']}")
+
+if __name__ == "__main__":
+    main()
