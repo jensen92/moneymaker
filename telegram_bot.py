@@ -10,8 +10,8 @@
 
 指令 (亦可用 /menu 叫出按鈕選單, 點一下直接執行):
     /menu               叫出按鈕選單
-    /scan               全市場掃描 K/D 清單 + 進出場點位
-    /year [K,D]          本年度進出清單 (已平倉交易 + 績效摘要, 預設全部策略)
+    /scan               全市場掃描 C/D 清單 + 進出場點位
+    /year [C,D]          本年度進出清單 (已平倉交易 + 績效摘要, 預設全部策略)
     /info               策略設計說明
     /picks              今日選股
     /analyze 2330       分析個股現況 + 進出場價格 (自動更新資料)
@@ -85,8 +85,19 @@ WEB_PORT = os.environ.get("MM_WEB_PORT", "8800").strip()
 API = f"https://api.telegram.org/bot{TOKEN}"
 YF_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
 
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+REQUESTS_SESSION = requests.Session()
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+)
+REQUESTS_SESSION.mount("https://", HTTPAdapter(max_retries=retry_strategy))
+REQUESTS_SESSION.mount("http://", HTTPAdapter(max_retries=retry_strategy))
+
 # 與每日報告 (github_scan.py) 一致的掃描策略組合
-SCAN_KEYS = ["K", "D"]
+SCAN_KEYS = ["C", "D"]
 
 _job_lock = threading.Lock()
 
@@ -95,7 +106,7 @@ def send(chat_id, text):
     for i in range(0, len(text), 3900):
         chunk = text[i:i + 3900]
         try:
-            requests.post(f"{API}/sendMessage",
+            REQUESTS_SESSION.post(f"{API}/sendMessage",
                           data={"chat_id": chat_id, "text": chunk},
                           timeout=30)
         except requests.RequestException as e:
@@ -113,7 +124,7 @@ def send_keyboard(chat_id, text, rows):
         return {"text": lbl, "callback_data": data}
     keyboard = [[_btn(lbl, cb) for lbl, cb in row] for row in rows]
     try:
-        requests.post(f"{API}/sendMessage",
+        REQUESTS_SESSION.post(f"{API}/sendMessage",
                       data={"chat_id": chat_id, "text": text,
                             "reply_markup": json.dumps(
                                 {"inline_keyboard": keyboard})},
@@ -125,7 +136,7 @@ def send_keyboard(chat_id, text, rows):
 def answer_callback(callback_id, text=""):
     """回應 callback query (消除按鈕上的轉圈圈)."""
     try:
-        requests.post(f"{API}/answerCallbackQuery",
+        REQUESTS_SESSION.post(f"{API}/answerCallbackQuery",
                       data={"callback_query_id": callback_id, "text": text},
                       timeout=30)
     except requests.RequestException as e:
@@ -139,7 +150,7 @@ def _web_url():
 def send_menu(chat_id):
     # 單層主選單: 全部功能攤平於第一層, 不用第二層。各功能執行前自動更新最新報價。
     rows = [
-        [("📋 全市場掃描", "scan"), ("📈 本年清單", "year")],
+        [("📋 全市場掃描 (C/D)", "scan"), ("📈 本年清單 (C/D)", "year")],
         [("🌽 穀物期貨", "futures"), ("🥇 黃金期貨", "gold")],
         [("🌾 穀物個別", "grainsig"), ("🔥 能源季節", "energy")],
         [("🌍 CTA分散投組", "cta"), ("📐 台指期", "txf")],
@@ -162,7 +173,7 @@ def chart_text():
 def send_get_id(chat_id, text):
     """送訊息並回傳 message_id (供後續 edit 更新進度)."""
     try:
-        r = requests.post(f"{API}/sendMessage",
+        r = REQUESTS_SESSION.post(f"{API}/sendMessage",
                           data={"chat_id": chat_id, "text": text},
                           timeout=30)
         return r.json().get("result", {}).get("message_id")
@@ -176,7 +187,7 @@ def edit(chat_id, message_id, text):
     if message_id is None:
         return
     try:
-        requests.post(f"{API}/editMessageText",
+        REQUESTS_SESSION.post(f"{API}/editMessageText",
                       data={"chat_id": chat_id, "message_id": message_id,
                             "text": text}, timeout=30)
     except requests.RequestException as e:
@@ -221,7 +232,7 @@ def _fetch_yf(code, range_="1y"):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}.TW"
     for attempt in range(3):
         try:
-            r = requests.get(url, params={"range": range_, "interval": "1d"},
+            r = REQUESTS_SESSION.get(url, params={"range": range_, "interval": "1d"},
                              headers=YF_HEADERS, timeout=20)
             r.raise_for_status()
             res = r.json()["chart"]["result"][0]
@@ -290,7 +301,7 @@ def _update_stock_data(code):
 
 
 def _analyze_stock(code, progress=None):
-    """下載最新資料, 用策略 K/D 分析現況, 回傳文字報告.
+    """下載最新資料, 用策略 C/D 分析現況, 回傳文字報告.
 
     progress: 可選 callback(text), 用於即時回報掃描進度.
     """
@@ -518,9 +529,8 @@ def analyze_job(chat_id, code):
 # ── 全市場掃描 (符合 C / D 的清單) ──────────────────────────────────────────
 
 def _scan_all(progress=None, keys=None):
-    """掃全市場, 回傳符合 keys 任一策略的清單 (標注複合命中 + 進出場點位).
-
-    keys 預設 = SCAN_KEYS (K/D), 與每日報告一致.
+    """全市場掃描, 將結果分組輸出。
+    keys 預設 = SCAN_KEYS (C/D), 與每日報告一致.
     """
     keys = keys or SCAN_KEYS
 
@@ -937,7 +947,7 @@ def _year_trades(keys=("K", "D"), progress=None):
     return _format_year_rows(rows, year, keys, frozen=False)
 
 
-def year_job(chat_id, strats="K,D"):
+def year_job(chat_id, strats="C,D"):
     """本年度進出清單: 同樣需先同步資料到最新交易日才能準確算出近期是否進出場
     (先前漏了這一步, 補上與 /scan /picks 一致的 refresh 流程)。"""
     keys = [k.strip().upper() for k in strats.split(",") if k.strip()]
@@ -1181,8 +1191,8 @@ def scheduler_loop():
 HELP = (
     "📈 策略機器人指令 (或輸入 /menu 用按鈕):\n"
     "/menu               叫出按鈕選單\n"
-    "/scan               全市場掃描 K/D 清單 + 進出場點位\n"
-    "/year [K,D]          本年度進出清單 + 績效摘要 (預設全部策略)\n"
+    "/scan               全市場掃描 C/D 清單 + 進出場點位\n"
+    "/year [C,D]          本年度進出清單 + 績效摘要 (預設全部策略)\n"
     "/info               策略設計說明\n"
     "/picks              今日選股\n"
     "/ay 2330            個股分析 + 進出場價格 (原 /analyze)\n"
@@ -1504,14 +1514,14 @@ def main():
                 print("儀表板伺服器啟動失敗:", e)
         threading.Thread(target=_serve_web, daemon=True).start()
     try:
-        r0 = requests.get(f"{API}/getUpdates", params={"offset": -1}, timeout=10)
+        r0 = REQUESTS_SESSION.get(f"{API}/getUpdates", params={"offset": -1}, timeout=10)
         updates0 = r0.json().get("result", [])
         offset = updates0[-1]["update_id"] + 1 if updates0 else None
     except Exception:  # noqa: BLE001
         offset = None
     while True:
         try:
-            r = requests.get(f"{API}/getUpdates",
+            r = REQUESTS_SESSION.get(f"{API}/getUpdates",
                              params={"timeout": 30, "offset": offset},
                              timeout=40)
             updates = r.json().get("result", [])
