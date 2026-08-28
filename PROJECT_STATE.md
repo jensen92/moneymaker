@@ -86,6 +86,13 @@
 - **DCA/LSI 於期貨**:不適用 (期貨會到期、需槓桿);穀物長期均值回歸年化僅~3%。
 - **指標標籤**:各處『MAR』實為『總損益÷最大回撤(報酬/回撤比)』非年化;顯示已改標
   『報酬/回撤比』。`/futures` 的 MAR 才是正規年化 (CAGR/DD)。
+- **台指 多時間框架順勢回檔波段 (`txf_mtf`)**:日K EMA20 定趨勢 / 小時線 EMA20/50 回檔
+  轉強進場、可留倉 / 15分實單微調。與既有前日突破『刻意不同』(買回檔非追突破),
+  兩者每日淨損益相關 −0.014 (真分散)。小時K 3年: 73筆 PF2.26, OOS PF2.99 ✅, 逐年/平台
+  /WF 多過。**但 G4 bootstrap 不顯著 (CI 下界 −6.38, t=1.61) 且去前10%大贏家後 −2901,
+  15分僅60天** → 判定『觀察』, 只模擬累積樣本, 未上實單。詳見 `TXF_MTF_VALIDATION.md`。
+  分散價值 (`txf_mtf_combo.py`): 與突破相關 −0.013, 合併書報酬/回撤 6.90→10.39、
+  Sharpe 1.82→2.04、MaxDD 反降, 合併書 bootstrap 顯著 → 作為分散來源有價值 (真分散)。
 
 ---
 
@@ -97,6 +104,9 @@
 - 資料夾 gitignored:`data/` `data_adj/` `futures_data/` (含 basket/) `web_cache/` 等;
   快取/state 檔 (`gold_state.json` 等) 亦 gitignored。
 - 分散驗證工具:`python3 season_validate.py` (季節逐年%)、`gold_daily_backtest.py` (黃金26年)。
+- **策略驗證流程 skill**:`.claude/skills/strategy-pipeline/` — 假設→回測→抗過擬合六檢→
+  統計檢定→凍結模擬→實單閘門→監控的 8 道閘門標準流程 (Claude Code 內 `/strategy-pipeline`);
+  驗證報告模板在其 `references/report-template.md`。新策略開發/驗證/上實單一律走此流程。
 
 ---
 
