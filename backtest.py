@@ -25,8 +25,12 @@ import pandas as pd
 
 from strategies import STRATEGIES, add_indicators
 
-DATA_DIR = os.environ.get(
-    "MM_DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
+_DEFAULT_DATA_DIR = (
+    os.path.join(os.path.dirname(__file__), "data_adj")
+    if os.path.exists(os.path.join(os.path.dirname(__file__), "data_adj"))
+    else os.path.join(os.path.dirname(__file__), "data")
+)
+DATA_DIR = os.environ.get("MM_DATA_DIR") or _DEFAULT_DATA_DIR
 FEE = 0.001425
 TAX = 0.003
 SLIP = 0.001

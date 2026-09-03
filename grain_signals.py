@@ -184,7 +184,10 @@ def get_grain_signal_report(
     atr: float,
     highest_since_entry: Optional[float] = None,
     entry_price: Optional[float] = None,
-    current_date: Optional[date] = None
+    current_date: Optional[date] = None,
+    stopped_out: bool = False,
+    stopped_date: Optional[str] = None,
+    stopped_price: Optional[float] = None,
 ) -> Dict:
     """生成農產品期貨即時信號報告"""
     if current_date is None:
@@ -194,7 +197,11 @@ def get_grain_signal_report(
     in_season, active_season = is_in_season_window(symbol, current_date)
     ts_desc, spread_pct, weight_factor = evaluate_term_structure(front_price, deferred_price)
     
-    if entry_price and entry_price > 0:
+    if stopped_out:
+        stop_price = stopped_price or 0.0
+        trailing_status = f"已於 {stopped_date} 觸發出場 (觸發價 {stop_price:.1f})"
+        action = f"🛑 季節性多單已觸發停損/停利平倉 (於 {stopped_date} 觸及 {stop_price:.1f})，本季空手觀望"
+    elif entry_price and entry_price > 0:
         base_stop = entry_price - cfg["default_stop_atr"] * atr
         high_p = max(highest_since_entry or current_price, current_price)
         profit_r = (high_p - entry_price) / (atr + 1e-6)
@@ -206,19 +213,28 @@ def get_grain_signal_report(
         else:
             stop_price = base_stop
             trailing_status = f"初始停損防禦 ({stop_price:.1f})"
+            
+        if in_season:
+            if weight_factor >= 0.8:
+                action = "🟢 建議多單續抱 (季節性窗口 + 供需支持)"
+            elif weight_factor > 0:
+                action = "🟡 建議減碼續抱 (季節性窗口但處於 Contango，防範庫存壓制)"
+            else:
+                action = "🔴 建議減碼或退場 (處於深度 Contango 累庫期)"
+        else:
+            action = "⚪ 非季節性窗口 (建議空手觀望)"
     else:
         stop_price = current_price - cfg["default_stop_atr"] * atr
         trailing_status = f"建議參考停損價 ({stop_price:.1f})"
-        
-    if in_season:
-        if weight_factor >= 0.8:
-            action = "🟢 建議多單進場 / 續抱 (季節性窗口 + 供需支持)"
-        elif weight_factor > 0:
-            action = "🟡 建議小部位多單 (季節性窗口但處於 Contango，需防範庫存壓制)"
+        if in_season:
+            if weight_factor >= 0.8:
+                action = "🟢 建議多單進場 (季節性窗口 + 供需支持)"
+            elif weight_factor > 0:
+                action = "🟡 建議小部位多單 (季節性窗口但處於 Contango，需防範庫存壓制)"
+            else:
+                action = "🔴 建議空手觀望 (處於深度 Contango 累庫期，暫緩季節性做多)"
         else:
-            action = "🔴 建議空手觀望 (處於深度 Contango 累庫期，暫緩季節性做多)"
-    else:
-        action = "⚪ 非季節性窗口 (建議空手觀望)"
+            action = "⚪ 非季節性窗口 (建議空手觀望)"
         
     return {
         "symbol": symbol,
@@ -226,11 +242,12 @@ def get_grain_signal_report(
         "date": current_date.strftime("%Y-%m-%d"),
         "current_price": current_price,
         "in_season": in_season,
+        "stopped_out": stopped_out,
         "active_season_name": active_season["name"] if active_season else "無",
         "active_thesis": active_season["thesis"] if active_season else "無",
         "term_structure_status": ts_desc,
         "spread_pct": round(spread_pct * 100, 2),
-        "suggested_weight": f"{int(weight_factor * 100)}%",
+        "suggested_weight": f"{int(weight_factor * 100)}%" if not stopped_out else "0%",
         "suggested_action": action,
         "atr": round(atr, 2),
         "stop_price": round(stop_price, 2),
@@ -304,25 +321,43 @@ def main():
         front_price = current_price
         deferred_price = fetch_deferred_price(key, current_price)
         
-        # Estimate highest_since_entry and entry_price by walking back to the start of the current season
-        # This is a rough estimation since we don't have a real portfolio tracker
+        # 模擬本季節多頭窗口的進場與持倉演化
         in_season, active_season = is_in_season_window(key, date_obj)
         entry_price = None
         highest_since_entry = None
+        stopped_out = False
+        stopped_date = None
+        stopped_price = None
         
         if in_season and active_season:
-            em = active_season["entry_month"]
-            ed = active_season["entry_day"]
-            # Find the start date of this season in our data
-            for i in range(len(dt_strs)-1, -1, -1):
+            cfg = GRAIN_CONFIG[key]
+            # 往回尋找本季節窗口的起點
+            entry_idx = None
+            for i in range(len(dt_strs) - 1, -1, -1):
                 d_obj = datetime.strptime(dt_strs[i], "%Y-%m-%d").date()
                 in_s, _ = is_in_season_window(key, d_obj)
                 if not in_s:
-                    # We just exited the season backwards, so i+1 is entry
-                    if i+1 < len(c):
-                        entry_price = float(c[i+1])
-                        highest_since_entry = float(np.max(h[i+1:]))
+                    entry_idx = i + 1
                     break
+            
+            if entry_idx is not None and entry_idx < len(c):
+                entry_price = float(c[entry_idx])
+                init_stop = entry_price - cfg["default_stop_atr"] * a[entry_idx]
+                curr_stop = init_stop
+                high_p = entry_price
+                
+                for k in range(entry_idx + 1, len(c)):
+                    high_p = max(high_p, float(h[k]))
+                    profit_r = (high_p - entry_price) / (a[k] + 1e-6)
+                    if profit_r >= cfg["trailing_trigger_atr"]:
+                        trail_stop = high_p - cfg["trailing_stop_atr"] * a[k]
+                        curr_stop = max(curr_stop, trail_stop)
+                    if float(l[k]) <= curr_stop:
+                        stopped_out = True
+                        stopped_date = dt_strs[k]
+                        stopped_price = curr_stop
+                        break
+                highest_since_entry = high_p
         
         report = get_grain_signal_report(
             symbol=key,
@@ -332,7 +367,10 @@ def main():
             atr=current_atr,
             highest_since_entry=highest_since_entry,
             entry_price=entry_price,
-            current_date=date_obj
+            current_date=date_obj,
+            stopped_out=stopped_out,
+            stopped_date=stopped_date,
+            stopped_price=stopped_price,
         )
         
         print(f"\n{report['name']}  現價 {report['current_price']:,.1f}｜ATR {report['atr']:.1f}")

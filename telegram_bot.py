@@ -547,8 +547,8 @@ def _scan_all(progress=None, keys=None):
     for mod in ["strategies", "backtest"]:
         if mod in sys.modules:
             importlib.reload(sys.modules[mod])
-    from strategies import add_indicators, STRATEGIES, _d_features, K_CONFIG, D_CONFIG
-    _WCFG = {"K": K_CONFIG, "D": D_CONFIG}
+    from strategies import add_indicators, STRATEGIES, _d_features, C_CONFIG, D_CONFIG
+    _WCFG = {"C": C_CONFIG, "D": D_CONFIG}
 
     def _eligible(feat, rk):
         """回傳此候選『一旦突破+爆量即會觸發』的策略字母 (其餘站立門檻已全過)。
