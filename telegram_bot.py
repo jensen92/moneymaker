@@ -19,7 +19,7 @@
     /chart              取得圖像化儀表板連結 (權益曲線/月損益/R分布/交易清單)
     /futures [M,D,S]    期貨每日訊號 (穀物期貨)
     /gold               黃金期貨順勢突破訊號 (小時K, 僅做多)
-    /txf                台指期日內策略 (前日高低突破, 小時K) 即時掛單計畫與觸發狀態
+    /txf                台指期波段順勢突破策略 (20H突破, 2.0ATR移動停利) 即時掛單計畫與持倉狀態
     /refresh            手動更新股價歷史資料 (增量下載)
     /update             git pull 雲端最新策略並重啟
     /c <指令>           叫 Claude Code 依文字指令分析/優化策略/改程式碼 (需本機已裝 claude CLI)
@@ -153,8 +153,7 @@ def send_menu(chat_id):
         [("📋 全市場掃描 (C/D)", "scan"), ("📈 本年清單 (C/D)", "year")],
         [("🌽 穀物期貨", "futures"), ("🥇 黃金期貨", "gold")],
         [("🌾 穀物個別", "grainsig"), ("🔥 能源季節", "energy")],
-        [("🌍 CTA分散投組", "cta"), ("📐 台指期", "txf")],
-        [("📊 儀表板", "chart")],
+        [("📐 台指期 (波段)", "txf"), ("📊 儀表板", "chart")],
         [("🧠 策略說明", "info"), ("📊 機器人狀態", "status")],
         [("📥 更新股價資料", "refresh"), ("🔄 同步最新策略", "update")],
     ]
@@ -1124,7 +1123,7 @@ def txf_watch_loop():
             if trade is not None and last_notified.get(today_d) != trade["status"]:
                 st = {"open": "🚨 已觸發進場", "stopped": "🛑 已停損出場",
                       "closed": "🔔 已收盤平倉"}[trade["status"]]
-                msg = (f"{st}: 台指日內策略 {trade['dir']}單\n"
+                msg = (f"{st}: 台指波段順勢策略 {trade['dir']}單\n"
                        f"進場 {trade['entry']:.0f} → "
                        f"{trade['exit']:.0f}  {trade['pnl_pt']:+.0f} 點 "
                        f"(NT${trade['pnl_nt']:+,.0f})")
@@ -1202,8 +1201,7 @@ HELP = (
     "/gold               黃金期貨順勢突破訊號 (小時K, 僅做多)\n"
     "/grain              穀物期貨個別季節進出場 (ZC/ZS/ZW, 含進場/停損/出場)\n"
     "/energy             能源季節做多 (NG天然氣/CL原油, 季節非趨勢)\n"
-    "/cta                CTA多元商品分散趨勢 (19市場多空, 商品交易王者法)\n"
-    "/txf                台指日內策略 + 選擇權情緒 + 波浪結構\n"
+    "/txf                台指波段順勢突破 (20H/2.0ATR) + 選擇權情緒 + 波浪結構\n"
     "/wave               台指波浪結構 (月/週/日定位 + 時線波浪 + 關鍵價位)\n"
     "/refresh            更新股價歷史資料 (增量下載)\n"
     "/update             git pull 雲端最新策略並重啟\n"
@@ -1259,8 +1257,6 @@ def handle(chat_id, text):
         threading.Thread(target=wave_job, args=(chat_id,), daemon=True).start()
     elif cmd in ("energy", "ng", "cl"):
         threading.Thread(target=energy_job, args=(chat_id,), daemon=True).start()
-    elif cmd == "cta":
-        threading.Thread(target=cta_job, args=(chat_id,), daemon=True).start()
     elif cmd == "txf":
         threading.Thread(target=txf_job, args=(chat_id,), daemon=True).start()
     elif cmd == "refresh":
@@ -1308,9 +1304,6 @@ def handle_callback(chat_id, data):
     elif data == "energy":
         threading.Thread(target=energy_job, args=(chat_id,),
                          daemon=True).start()
-    elif data == "cta":
-        threading.Thread(target=cta_job, args=(chat_id,),
-                         daemon=True).start()
     elif data == "gold":
         threading.Thread(target=gold_job, args=(chat_id,),
                          daemon=True).start()
@@ -1338,7 +1331,7 @@ def handle_callback(chat_id, data):
 # ── 期貨每日訊號 ─────────────────────────────────────────────────────────────
 
 def txf_job(chat_id):
-    """台指期日內策略 (前日高低突破): 抓最新小時K, 回報今日掛單計畫與觸發狀態."""
+    """台指期波段順勢突破策略 (20H突破, 2.0ATR移動停利): 抓最新小時K, 回報掛單計畫與持倉狀態."""
     if not _job_lock.acquire(blocking=False):
         send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
         return
@@ -1402,18 +1395,6 @@ def energy_job(chat_id):
     try:
         send(chat_id, "⏳ 更新能源日線 + 計算季節訊號中...")
         out = run_script(["energy_signals.py"])
-        send(chat_id, out)
-    finally:
-        _job_lock.release()
-
-
-def cta_job(chat_id):
-    if not _job_lock.acquire(blocking=False):
-        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
-        return
-    try:
-        send(chat_id, "⏳ 更新19市場商品日線 + 計算CTA趨勢訊號中 (較久)...")
-        out = run_script(["cta_signals.py"])
         send(chat_id, out)
     finally:
         _job_lock.release()
