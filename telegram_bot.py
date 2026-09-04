@@ -1110,9 +1110,13 @@ def txf_watch_loop():
                     pc_alerted.add(pdate)
             except Exception as e:  # noqa: BLE001
                 print("選擇權極端情緒檢查錯誤:", e)
-        in_session = (now.weekday() < 5
-                      and (now.hour, now.minute) >= (9, 0)
-                      and (now.hour, now.minute) <= (13, 35))
+        # 期交所完整交易時段: 日盤 08:45~13:45, 夜盤 15:00~翌日 05:00
+        is_day = (now.weekday() < 5 and ((now.hour, now.minute) >= (8, 45) and (now.hour, now.minute) <= (13, 45)))
+        is_night = (
+            (now.weekday() < 5 and now.hour >= 15) or
+            (now.weekday() < 6 and now.hour < 5)
+        )
+        in_session = is_day or is_night
         if not in_session:
             time.sleep(60)
             continue
@@ -1120,13 +1124,32 @@ def txf_watch_loop():
             import txf_strategy
             importlib.reload(txf_strategy)
             today_d, trade = txf_strategy.check_today_trigger()
-            if trade is not None and last_notified.get(today_d) != trade["status"]:
-                st = {"open": "🚨 已觸發進場", "stopped": "🛑 已停損出場",
-                      "closed": "🔔 已收盤平倉"}[trade["status"]]
-                msg = (f"{st}: 台指波段順勢策略 {trade['dir']}單\n"
-                       f"進場 {trade['entry']:.0f} → "
-                       f"{trade['exit']:.0f}  {trade['pnl_pt']:+.0f} 點 "
-                       f"(NT${trade['pnl_nt']:+,.0f})")
+            if trade is not None:
+                # 雙重防重推機制：同一交易日相同狀態不重複發送
+                sig_key = f"{today_d}_{trade.get('status')}_{trade.get('dir')}_{trade.get('exit', 0):.0f}"
+                if sig_key in last_notified:
+                    time.sleep(interval)
+                    continue
+                last_notified[sig_key] = time.time()
+
+                st_map = {
+                    "open": "🚨 已觸發進場",
+                    "stopped": "🛑 已停損出場",
+                    "closed": "🔔 已收盤平倉",
+                    "trail_up": "🔼 停損上移鎖利"
+                }
+                st = st_map.get(trade["status"], "📢 台指訊號")
+                if trade["status"] == "trail_up":
+                    msg = (f"🔼 台指波段策略【停損上移鎖利】\n"
+                           f"方向: {trade['dir']}單 (進場 {trade['entry']:.0f})\n"
+                           f"停損單: {trade['old_stop']:.0f} → 上移至 {trade['new_stop']:.0f}\n"
+                           f"目前浮盈: {trade['pnl_pt']:+.0f} 點 (NT${trade['pnl_nt']:+,.0f})\n"
+                           f"👉 操作: 請將期貨停損單改掛 {trade['new_stop']:.0f} 鎖定利潤！")
+                else:
+                    msg = (f"{st}: 台指波段順勢策略 {trade['dir']}單\n"
+                           f"進場 {trade['entry']:.0f} → "
+                           f"{trade['exit']:.0f}  {trade['pnl_pt']:+.0f} 點 "
+                           f"(NT${trade['pnl_nt']:+,.0f})")
                 try:
                     import txo_sentiment
                     s = txo_sentiment.week_report()
@@ -1135,7 +1158,6 @@ def txf_watch_loop():
                 except Exception:
                     pass
                 send(ALLOWED_CHAT, msg)
-                last_notified[today_d] = trade["status"]
         except Exception as e:  # noqa: BLE001
             print("台指盤中監控錯誤:", e)
         time.sleep(interval)

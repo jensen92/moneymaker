@@ -15,8 +15,12 @@
    資料上以分位數挑出並回報, 屬樣本內, 未做樣本外驗證; 邊際本就溫和 (隔日+0.19%),
    應僅當『方向偏好的輔助』, 切勿單獨據此進場或放大部位。
 """
+import json
+import os
 import time
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+STATE_FILE = os.path.join(HERE, "txo_pc_state.json")
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
 
 # 經 5 年驗證的門檻 (P/C 未平倉比率 %)
@@ -57,20 +61,19 @@ def fetch_pcr(months=2):
 
 def classify(pc):
     if pc >= PANIC:
-        return ("🟢 反向偏多（極端恐慌）",
-                "賣權大量堆積=市場過度避險; 歷史此時後5日+1.06% 勝率66%。"
-                "TXF 偏作多/不追空, 留意反彈。")
+        return ("🟢 強多防守（下檔支撐極強）",
+                "賣權OI大量堆積（下檔防守極為厚實）; 歷史此時後5日+1.06% 勝率66%。"
+                "台指順勢偏多、不宜盲目追空。")
     if pc >= HIGH:
-        return ("🟢 偏多（賣權偏多）",
-                "避險盤偏多, 歷史隔日+0.19% 勝率61%。TXF 多單訊號可較積極。")
+        return ("🟢 多方控盤（支撐偏強）",
+                "賣權OI大於買權，下檔具良好支撐; 歷史隔日+0.19% 勝率61%。台指多方力道佔優。")
     if pc <= EUPHORIA:
-        return ("🔴 偏空/謹慎（極端樂觀）",
-                "買權偏多=市場過度樂觀; 歷史此時後5日僅+0.23%(偏弱)。"
-                "TXF 多單保守、留意回檔。")
+        return ("🔴 空方壓制（上檔沉重／極端弱勢）",
+                "買權OI大幅超過賣權，上檔壓力沉重且下檔支撐退潮; 歷史此時後續表現偏弱。台指多單宜保守、提防續跌。")
     if pc <= LOW:
-        return ("🟡 略偏謹慎（樂觀）",
-                "情緒偏樂觀, 多單品質一般。")
-    return ("⚪ 中性", "情緒中性, 依台指本身訊號操作。")
+        return ("🟡 略偏弱勢（支撐減弱）",
+                "P/C比率跌破100%，多方防守力道轉弱。")
+    return ("⚪ 中性平衡", "買賣權未平倉比率均衡，依台指波段突破訊號操作。")
 
 
 def report():
@@ -84,7 +87,7 @@ def report():
     if len(hist) >= 6:
         prev = hist[-6][1]
         chg = f"（5日前 {prev:.0f}→今 {pc:.0f}）"
-    return (f"🎲 選擇權情緒 P/C未平倉比率 {pc:.0f}{chg}\n"
+    return (f"🎲 選擇權籌碼 P/C未平倉比率 {pc:.0f}%{chg}\n"
             f"  {label}\n  {note}")
 
 
@@ -99,32 +102,56 @@ def week_report():
     # 近一週趨勢: 比較本週首尾
     if len(last) >= 2:
         diff = last[-1][1] - last[0][1]
-        trend = ("恐慌升溫→更偏多" if diff >= 8 else
-                 "樂觀升溫→轉謹慎" if diff <= -8 else "大致持平")
+        trend = ("多方支撐增強" if diff >= 8 else
+                 "空方壓制加重" if diff <= -8 else "大致持平")
     else:
         trend = ""
-    wk = "｜".join(f"{d[5:]} {v:.0f}" for d, v in last)
-    return (f"🎲 選擇權情緒 P/C未平倉比率（賣權OI/買權OI）\n"
+    wk = "｜".join(f"{d[5:]} {v:.0f}%" for d, v in last)
+    return (f"🎲 選擇權籌碼 P/C未平倉比率（賣權OI/買權OI）\n"
             f"近一週 {wk}\n"
-            f"今日 {pc:.0f} {label}（週趨勢: {trend}）\n"
+            f"今日 {pc:.0f}% {label}（週趨勢: {trend}）\n"
             f"{note}")
 
 
 def extreme_alert():
-    """若最新 P/C 為極端值 (≥PANIC 恐慌 / ≤EUPHORIA 樂觀), 回傳 (date, 推播文字);
-    否則 (date_or_None, None)。供盤中監控『極端時單獨推播一次』, 呼叫端以 date 去重。"""
+    """若最新 P/C 為極端值 (≥PANIC 強多支撐 / ≤EUPHORIA 空方壓制), 回傳 (date, 推播文字);
+    否則 (date_or_None, None)。具備硬碟持久化去重, 每個交易日最多只推播一次。"""
     hist = fetch_pcr(2)
     if not hist:
         return None, None
     date, pc = hist[-1]
     if pc < PANIC and pc > EUPHORIA:
         return date, None
+
+    # 檢查持久化檔案，避免重啟重複推播
+    alerted_dates = []
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE) as f:
+                alerted_dates = json.load(f).get("alerted_dates", [])
+        except Exception:
+            pass
+
+    if date in alerted_dates:
+        return date, None
+
     last = hist[-5:]
-    wk = "｜".join(f"{d[5:]} {v:.0f}" for d, v in last)
+    wk = "｜".join(f"{d[5:]} {v:.0f}%" for d, v in last)
     label, note = classify(pc)
-    head = "🔥 選擇權極端恐慌訊號" if pc >= PANIC else "🔥 選擇權極端樂觀訊號"
-    return date, (f"{head}（P/C未平倉比率 {pc:.0f}）\n"
+    head = "🛡️ 選擇權強多支撐訊號" if pc >= PANIC else "⚠️ 選擇權空方重壓警訊"
+    alert_text = (f"{head}（P/C未平倉比率 {pc:.0f}%）\n"
                   f"近一週 {wk}\n{label}\n{note}")
+
+    alerted_dates.append(date)
+    # 保留最近 30 天
+    alerted_dates = alerted_dates[-30:]
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump({"alerted_dates": alerted_dates}, f)
+    except Exception:
+        pass
+
+    return date, alert_text
 
 
 if __name__ == "__main__":
