@@ -26,6 +26,9 @@ web_cache/
 fundamentals/
 gold_state.json
 grain_state.json
+txf_state.json
+txo_pc_state.json
+*_state.json
 optimize_kd_results.csv
 limitup_lift.csv
 limitup_report.md

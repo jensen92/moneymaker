@@ -105,7 +105,11 @@ def backtest(key):
         if m == cfg["month"] and pm != cfg["month"] and yr not in ydone and not np.isnan(a[i]):
             ydone.add(yr)
             entry = c[i]; risk = st * a[i]; stop = entry - risk
-            j = min(i + hold, n - 1); ex = c[j]
+            j = i + hold
+            if j >= n:
+                # 仍在進行中的當前持倉，不計入歷史已結算交易回測
+                continue
+            ex = c[j]
             for k in range(i + 1, j + 1):
                 if c[k] <= stop:
                     ex = c[k]; break
@@ -126,14 +130,14 @@ def metrics(R):
 
 def _state(key):
     """目前季節狀態 — 以回測同邏輯重放找『目前實際部位』(待進場/進場日/持有中),
-    確保與 backtest 的 21×hold_mo 交易日持有窗完全一致 (不再用日曆月近似)。"""
+    確保與 backtest 的 21×hold_mo 交易日持有窗完全一致。"""
     cfg = CONFIG[key]
     dt, o, h, l, c = _load(key)
     a = _atr(h, l, c, 20)
     n = len(c); i = n - 1
     hold = int(21 * cfg["hold_mo"]); st = cfg["stop_atr"]; em = cfg["month"]
     price = float(c[i]); atr = float(a[i]); cur_m = int(dt[i][5:7])
-    # 找最近一次進場 (進場月第一個交易日) 與其實際出場索引 (停損或到期)
+    # 找最近一次進場 (進場月第一個交易日) 與其實際出場狀態
     ydone = set(); last_e = None
     for k in range(21, n):
         m = int(dt[k][5:7]); pm = int(dt[k - 1][5:7]); yr = dt[k][:4]
@@ -141,15 +145,19 @@ def _state(key):
             ydone.add(yr); last_e = k
     pos = None
     if last_e is not None:
-        entry = c[last_e]; stop = entry - st * a[last_e]; exit_i = min(last_e + hold, n - 1)
-        close_i = exit_i
-        for k in range(last_e + 1, exit_i + 1):
+        entry = c[last_e]; stop = entry - st * a[last_e]
+        target_exit_idx = last_e + hold
+        stopped = False
+        for k in range(last_e + 1, i + 1):
             if c[k] <= stop:
-                close_i = k; break
-        if last_e <= i < close_i:            # 目前仍持倉 (含進場日, 不含出場日)
+                stopped = True
+                break
+        if not stopped and i < target_exit_idx:
+            days_left = target_exit_idx - i
+            exit_m = ((em + cfg["hold_mo"] - 1) % 12) + 1
             pos = {"entry": float(entry), "stop": float(stop),
-                   "exit_i": exit_i, "exit_m": int(dt[exit_i][5:7]),
-                   "days_left": exit_i - i, "just_entered": (last_e == i)}
+                   "exit_m": exit_m, "days_left": days_left,
+                   "just_entered": (last_e == i)}
     in_entry = pos is not None and pos["just_entered"]
     holding = pos is not None and not pos["just_entered"]
     exit_m = pos["exit_m"] if pos else ((em + cfg["hold_mo"] - 1) % 12) + 1

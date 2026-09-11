@@ -1,0 +1,34 @@
+name: SMC Daily Screener
+
+on:
+  schedule:
+    # 每天台灣時間 18:00 執行 (UTC 時間 10:00)
+    # 週一到週五執行 (1-5)
+    - cron: '0 10 * * 1-5'
+  workflow_dispatch: # 允許手動觸發
+
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas numpy yfinance requests
+
+    - name: Run SMC Screener
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        python smc_daily_screener_cloud.py

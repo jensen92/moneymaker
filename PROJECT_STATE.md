@@ -17,8 +17,7 @@
 | `/futures [S]` | 穀物季節 (預設S; D/M高DD不列預設) | `futures_signals.py` |
 | `/grain` | 穀物個別季節進出場 (黃豆/玉米) | `grain_signals.py` |
 | `/energy` (`/ng`/`/cl`) | 能源季節做多 (NG/CL) | `energy_signals.py` |
-| `/cta` | 19市場CTA分散趨勢投組 | `cta_signals.py` |
-| `/txf` | 台指日內 + 選擇權情緒 + 波浪結構 | `txf_strategy.live_report` |
+| `/txf` | 台指波段順勢突破 (20H/2.0ATR) + 選擇權情緒 + 波浪結構 | `txf_strategy.live_report` |
 | `/wave` | 台指波浪結構 (月/週/日/時) | `txf_wave.py` |
 | `/backtest` `/chart` `/status` `/info` `/refresh` `/update` `/c` | 回測/儀表板/狀態/說明/更新/同步/ClaudeCode | 各 job |
 
@@ -29,7 +28,7 @@
 
 ## 2. 各策略現況與驗證 (策略細節在各程式的 docstring)
 
-**個股 (生產: PA/PB/K/L/D)** — 皆 `_d_features`+`_d_signal` 的 Minervini VCP 突破變體。
+**個股 (生產: C/D)** — 皆 `_d_features`+`_d_signal` 的 Minervini VCP 突破變體。
 - 進場:訊號日『收盤』確認突破+爆量 → 次一交易日開盤買進 (漲停跳過)。
 - 出場:停損 / 跌破MA50 / +20%賣半 / 最長持有;浮盈+3R保本、站上MA50後停損跟MA50。
 - **C vs D EV 對抗驗證結論**:D 較佳 (EV/年 +51R vs +36R、樣本內外皆穩) 但單筆EV差
@@ -47,11 +46,7 @@
 - NG 9月進持3月:勝率64% 平均+13.9%/年 ✅ (波動大, 近年勝率降);
 - CL 12月進持6月:勝率54% 平均+11% ✅ (報酬集中2020/21/25大年)。
 
-**CTA 分散投組** `cta_signals` (`/cta`) — 19市場 TSMOM多空+波動目標風險平價。
-- 投組Sharpe 0.18 (單市場平均0.09, 分散近兩倍) MaxDD 8.2%, 前後半皆穩。
-- 純商品版 Sharpe 偏溫和;價值在與台股/黃金/穀物低相關的分散, 非單獨高報酬。
-
-**台指** `txf_strategy` (`/txf`) — 前日高低突破日內 + 兩個輔助:
+**台指** `txf_strategy` (`/txf`) — 20H 通道順勢突破 + 2.0 ATR 移動追蹤停利 (跨日波段持倉, 勝率 55.7%, PF 3.27, 期望值 +233.5點/筆) + 兩個輔助:
 - 選擇權 P/C 未平倉比率『反向情緒』(`txo_sentiment`):高P/C(恐慌)→偏多;
   極端P/C≥138後5日+1.06%勝率66%。⚠️門檻樣本內、邊際溫和, 僅輔助。
 - 波浪結構 (`txf_wave`):ZigZag轉折+多框架趨勢+費波那契;波浪標記為啟發式輔助非定論。
