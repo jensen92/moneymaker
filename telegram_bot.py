@@ -10,8 +10,8 @@
 
 指令 (亦可用 /menu 叫出按鈕選單, 點一下直接執行):
     /menu               叫出按鈕選單
-    /scan               全市場掃描 K/D 清單 + 進出場點位
-    /year [K,D]          本年度進出清單 (已平倉交易 + 績效摘要, 預設全部策略)
+    /scan               全市場掃描 C/D 清單 + 進出場點位
+    /year [C,D]          本年度進出清單 (已平倉交易 + 績效摘要, 預設全部策略)
     /info               策略設計說明
     /picks              今日選股
     /analyze 2330       分析個股現況 + 進出場價格 (自動更新資料)
@@ -19,7 +19,7 @@
     /chart              取得圖像化儀表板連結 (權益曲線/月損益/R分布/交易清單)
     /futures [M,D,S]    期貨每日訊號 (穀物期貨)
     /gold               黃金期貨順勢突破訊號 (小時K, 僅做多)
-    /txf                台指期日內策略 (前日高低突破, 小時K) 即時掛單計畫與觸發狀態
+    /txf                台指期波段順勢突破策略 (20H突破, 2.0ATR移動停利) 即時掛單計畫與持倉狀態
     /refresh            手動更新股價歷史資料 (增量下載)
     /update             git pull 雲端最新策略並重啟
     /c <指令>           叫 Claude Code 依文字指令分析/優化策略/改程式碼 (需本機已裝 claude CLI)
@@ -85,8 +85,19 @@ WEB_PORT = os.environ.get("MM_WEB_PORT", "8800").strip()
 API = f"https://api.telegram.org/bot{TOKEN}"
 YF_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
 
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+REQUESTS_SESSION = requests.Session()
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+)
+REQUESTS_SESSION.mount("https://", HTTPAdapter(max_retries=retry_strategy))
+REQUESTS_SESSION.mount("http://", HTTPAdapter(max_retries=retry_strategy))
+
 # 與每日報告 (github_scan.py) 一致的掃描策略組合
-SCAN_KEYS = ["K", "D"]
+SCAN_KEYS = ["C", "D"]
 
 _job_lock = threading.Lock()
 
@@ -95,7 +106,7 @@ def send(chat_id, text):
     for i in range(0, len(text), 3900):
         chunk = text[i:i + 3900]
         try:
-            requests.post(f"{API}/sendMessage",
+            REQUESTS_SESSION.post(f"{API}/sendMessage",
                           data={"chat_id": chat_id, "text": chunk},
                           timeout=30)
         except requests.RequestException as e:
@@ -113,7 +124,7 @@ def send_keyboard(chat_id, text, rows):
         return {"text": lbl, "callback_data": data}
     keyboard = [[_btn(lbl, cb) for lbl, cb in row] for row in rows]
     try:
-        requests.post(f"{API}/sendMessage",
+        REQUESTS_SESSION.post(f"{API}/sendMessage",
                       data={"chat_id": chat_id, "text": text,
                             "reply_markup": json.dumps(
                                 {"inline_keyboard": keyboard})},
@@ -125,7 +136,7 @@ def send_keyboard(chat_id, text, rows):
 def answer_callback(callback_id, text=""):
     """回應 callback query (消除按鈕上的轉圈圈)."""
     try:
-        requests.post(f"{API}/answerCallbackQuery",
+        REQUESTS_SESSION.post(f"{API}/answerCallbackQuery",
                       data={"callback_query_id": callback_id, "text": text},
                       timeout=30)
     except requests.RequestException as e:
@@ -139,11 +150,10 @@ def _web_url():
 def send_menu(chat_id):
     # 單層主選單: 全部功能攤平於第一層, 不用第二層。各功能執行前自動更新最新報價。
     rows = [
-        [("📋 全市場掃描", "scan"), ("📈 本年清單", "year")],
+        [("📋 全市場掃描 (C/D)", "scan"), ("📈 本年清單 (C/D)", "year")],
         [("🌽 穀物期貨", "futures"), ("🥇 黃金期貨", "gold")],
         [("🌾 穀物個別", "grainsig"), ("🔥 能源季節", "energy")],
-        [("🌍 CTA分散投組", "cta"), ("📐 台指期", "txf")],
-        [("📊 儀表板", "chart")],
+        [("📐 台指期 (波段)", "txf"), ("📊 儀表板", "chart")],
         [("🧠 策略說明", "info"), ("📊 機器人狀態", "status")],
         [("📥 更新股價資料", "refresh"), ("🔄 同步最新策略", "update")],
     ]
@@ -162,7 +172,7 @@ def chart_text():
 def send_get_id(chat_id, text):
     """送訊息並回傳 message_id (供後續 edit 更新進度)."""
     try:
-        r = requests.post(f"{API}/sendMessage",
+        r = REQUESTS_SESSION.post(f"{API}/sendMessage",
                           data={"chat_id": chat_id, "text": text},
                           timeout=30)
         return r.json().get("result", {}).get("message_id")
@@ -176,7 +186,7 @@ def edit(chat_id, message_id, text):
     if message_id is None:
         return
     try:
-        requests.post(f"{API}/editMessageText",
+        REQUESTS_SESSION.post(f"{API}/editMessageText",
                       data={"chat_id": chat_id, "message_id": message_id,
                             "text": text}, timeout=30)
     except requests.RequestException as e:
@@ -221,7 +231,7 @@ def _fetch_yf(code, range_="1y"):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}.TW"
     for attempt in range(3):
         try:
-            r = requests.get(url, params={"range": range_, "interval": "1d"},
+            r = REQUESTS_SESSION.get(url, params={"range": range_, "interval": "1d"},
                              headers=YF_HEADERS, timeout=20)
             r.raise_for_status()
             res = r.json()["chart"]["result"][0]
@@ -290,7 +300,7 @@ def _update_stock_data(code):
 
 
 def _analyze_stock(code, progress=None):
-    """下載最新資料, 用策略 K/D 分析現況, 回傳文字報告.
+    """下載最新資料, 用策略 C/D 分析現況, 回傳文字報告.
 
     progress: 可選 callback(text), 用於即時回報掃描進度.
     """
@@ -518,9 +528,8 @@ def analyze_job(chat_id, code):
 # ── 全市場掃描 (符合 C / D 的清單) ──────────────────────────────────────────
 
 def _scan_all(progress=None, keys=None):
-    """掃全市場, 回傳符合 keys 任一策略的清單 (標注複合命中 + 進出場點位).
-
-    keys 預設 = SCAN_KEYS (K/D), 與每日報告一致.
+    """全市場掃描, 將結果分組輸出。
+    keys 預設 = SCAN_KEYS (C/D), 與每日報告一致.
     """
     keys = keys or SCAN_KEYS
 
@@ -537,8 +546,8 @@ def _scan_all(progress=None, keys=None):
     for mod in ["strategies", "backtest"]:
         if mod in sys.modules:
             importlib.reload(sys.modules[mod])
-    from strategies import add_indicators, STRATEGIES, _d_features, K_CONFIG, D_CONFIG
-    _WCFG = {"K": K_CONFIG, "D": D_CONFIG}
+    from strategies import add_indicators, STRATEGIES, _d_features, C_CONFIG, D_CONFIG
+    _WCFG = {"C": C_CONFIG, "D": D_CONFIG}
 
     def _eligible(feat, rk):
         """回傳此候選『一旦突破+爆量即會觸發』的策略字母 (其餘站立門檻已全過)。
@@ -937,7 +946,7 @@ def _year_trades(keys=("K", "D"), progress=None):
     return _format_year_rows(rows, year, keys, frozen=False)
 
 
-def year_job(chat_id, strats="K,D"):
+def year_job(chat_id, strats="C,D"):
     """本年度進出清單: 同樣需先同步資料到最新交易日才能準確算出近期是否進出場
     (先前漏了這一步, 補上與 /scan /picks 一致的 refresh 流程)。"""
     keys = [k.strip().upper() for k in strats.split(",") if k.strip()]
@@ -1101,9 +1110,13 @@ def txf_watch_loop():
                     pc_alerted.add(pdate)
             except Exception as e:  # noqa: BLE001
                 print("選擇權極端情緒檢查錯誤:", e)
-        in_session = (now.weekday() < 5
-                      and (now.hour, now.minute) >= (9, 0)
-                      and (now.hour, now.minute) <= (13, 35))
+        # 期交所完整交易時段: 日盤 08:45~13:45, 夜盤 15:00~翌日 05:00
+        is_day = (now.weekday() < 5 and ((now.hour, now.minute) >= (8, 45) and (now.hour, now.minute) <= (13, 45)))
+        is_night = (
+            (now.weekday() < 5 and now.hour >= 15) or
+            (now.weekday() < 6 and now.hour < 5)
+        )
+        in_session = is_day or is_night
         if not in_session:
             time.sleep(60)
             continue
@@ -1111,13 +1124,32 @@ def txf_watch_loop():
             import txf_strategy
             importlib.reload(txf_strategy)
             today_d, trade = txf_strategy.check_today_trigger()
-            if trade is not None and last_notified.get(today_d) != trade["status"]:
-                st = {"open": "🚨 已觸發進場", "stopped": "🛑 已停損出場",
-                      "closed": "🔔 已收盤平倉"}[trade["status"]]
-                msg = (f"{st}: 台指日內策略 {trade['dir']}單\n"
-                       f"進場 {trade['entry']:.0f} → "
-                       f"{trade['exit']:.0f}  {trade['pnl_pt']:+.0f} 點 "
-                       f"(NT${trade['pnl_nt']:+,.0f})")
+            if trade is not None:
+                # 雙重防重推機制：同一交易日相同狀態不重複發送
+                sig_key = f"{today_d}_{trade.get('status')}_{trade.get('dir')}_{trade.get('exit', 0):.0f}"
+                if sig_key in last_notified:
+                    time.sleep(interval)
+                    continue
+                last_notified[sig_key] = time.time()
+
+                st_map = {
+                    "open": "🚨 已觸發進場",
+                    "stopped": "🛑 已停損出場",
+                    "closed": "🔔 已收盤平倉",
+                    "trail_up": "🔼 停損上移鎖利"
+                }
+                st = st_map.get(trade["status"], "📢 台指訊號")
+                if trade["status"] == "trail_up":
+                    msg = (f"🔼 台指波段策略【停損上移鎖利】\n"
+                           f"方向: {trade['dir']}單 (進場 {trade['entry']:.0f})\n"
+                           f"停損單: {trade['old_stop']:.0f} → 上移至 {trade['new_stop']:.0f}\n"
+                           f"目前浮盈: {trade['pnl_pt']:+.0f} 點 (NT${trade['pnl_nt']:+,.0f})\n"
+                           f"👉 操作: 請將期貨停損單改掛 {trade['new_stop']:.0f} 鎖定利潤！")
+                else:
+                    msg = (f"{st}: 台指波段順勢策略 {trade['dir']}單\n"
+                           f"進場 {trade['entry']:.0f} → "
+                           f"{trade['exit']:.0f}  {trade['pnl_pt']:+.0f} 點 "
+                           f"(NT${trade['pnl_nt']:+,.0f})")
                 try:
                     import txo_sentiment
                     s = txo_sentiment.week_report()
@@ -1126,7 +1158,6 @@ def txf_watch_loop():
                 except Exception:
                     pass
                 send(ALLOWED_CHAT, msg)
-                last_notified[today_d] = trade["status"]
         except Exception as e:  # noqa: BLE001
             print("台指盤中監控錯誤:", e)
         time.sleep(interval)
@@ -1181,8 +1212,8 @@ def scheduler_loop():
 HELP = (
     "📈 策略機器人指令 (或輸入 /menu 用按鈕):\n"
     "/menu               叫出按鈕選單\n"
-    "/scan               全市場掃描 K/D 清單 + 進出場點位\n"
-    "/year [K,D]          本年度進出清單 + 績效摘要 (預設全部策略)\n"
+    "/scan               全市場掃描 C/D 清單 + 進出場點位\n"
+    "/year [C,D]          本年度進出清單 + 績效摘要 (預設全部策略)\n"
     "/info               策略設計說明\n"
     "/picks              今日選股\n"
     "/ay 2330            個股分析 + 進出場價格 (原 /analyze)\n"
@@ -1192,8 +1223,7 @@ HELP = (
     "/gold               黃金期貨順勢突破訊號 (小時K, 僅做多)\n"
     "/grain              穀物期貨個別季節進出場 (ZC/ZS/ZW, 含進場/停損/出場)\n"
     "/energy             能源季節做多 (NG天然氣/CL原油, 季節非趨勢)\n"
-    "/cta                CTA多元商品分散趨勢 (19市場多空, 商品交易王者法)\n"
-    "/txf                台指日內策略 + 選擇權情緒 + 波浪結構\n"
+    "/txf                台指波段順勢突破 (20H/2.0ATR) + 選擇權情緒 + 波浪結構\n"
     "/wave               台指波浪結構 (月/週/日定位 + 時線波浪 + 關鍵價位)\n"
     "/refresh            更新股價歷史資料 (增量下載)\n"
     "/update             git pull 雲端最新策略並重啟\n"
@@ -1249,8 +1279,6 @@ def handle(chat_id, text):
         threading.Thread(target=wave_job, args=(chat_id,), daemon=True).start()
     elif cmd in ("energy", "ng", "cl"):
         threading.Thread(target=energy_job, args=(chat_id,), daemon=True).start()
-    elif cmd == "cta":
-        threading.Thread(target=cta_job, args=(chat_id,), daemon=True).start()
     elif cmd == "txf":
         threading.Thread(target=txf_job, args=(chat_id,), daemon=True).start()
     elif cmd == "refresh":
@@ -1298,9 +1326,6 @@ def handle_callback(chat_id, data):
     elif data == "energy":
         threading.Thread(target=energy_job, args=(chat_id,),
                          daemon=True).start()
-    elif data == "cta":
-        threading.Thread(target=cta_job, args=(chat_id,),
-                         daemon=True).start()
     elif data == "gold":
         threading.Thread(target=gold_job, args=(chat_id,),
                          daemon=True).start()
@@ -1328,7 +1353,7 @@ def handle_callback(chat_id, data):
 # ── 期貨每日訊號 ─────────────────────────────────────────────────────────────
 
 def txf_job(chat_id):
-    """台指期日內策略 (前日高低突破): 抓最新小時K, 回報今日掛單計畫與觸發狀態."""
+    """台指期波段順勢突破策略 (20H突破, 2.0ATR移動停利): 抓最新小時K, 回報掛單計畫與持倉狀態."""
     if not _job_lock.acquire(blocking=False):
         send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
         return
@@ -1392,18 +1417,6 @@ def energy_job(chat_id):
     try:
         send(chat_id, "⏳ 更新能源日線 + 計算季節訊號中...")
         out = run_script(["energy_signals.py"])
-        send(chat_id, out)
-    finally:
-        _job_lock.release()
-
-
-def cta_job(chat_id):
-    if not _job_lock.acquire(blocking=False):
-        send(chat_id, "⏳ 已有任務在執行中, 請待其完成後再試")
-        return
-    try:
-        send(chat_id, "⏳ 更新19市場商品日線 + 計算CTA趨勢訊號中 (較久)...")
-        out = run_script(["cta_signals.py"])
         send(chat_id, out)
     finally:
         _job_lock.release()
@@ -1504,14 +1517,14 @@ def main():
                 print("儀表板伺服器啟動失敗:", e)
         threading.Thread(target=_serve_web, daemon=True).start()
     try:
-        r0 = requests.get(f"{API}/getUpdates", params={"offset": -1}, timeout=10)
+        r0 = REQUESTS_SESSION.get(f"{API}/getUpdates", params={"offset": -1}, timeout=10)
         updates0 = r0.json().get("result", [])
         offset = updates0[-1]["update_id"] + 1 if updates0 else None
     except Exception:  # noqa: BLE001
         offset = None
     while True:
         try:
-            r = requests.get(f"{API}/getUpdates",
+            r = REQUESTS_SESSION.get(f"{API}/getUpdates",
                              params={"timeout": 30, "offset": offset},
                              timeout=40)
             updates = r.json().get("result", [])
